@@ -1,6 +1,7 @@
-module Data.SQLHandle where
+module Data.Handle.SQLHandle where
 
-import Data.Table
+import Data.Impl.Column ( Column(..) )
+import Data.Column
 
 data PreStmt a =
   SCond (Cond a)

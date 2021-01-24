@@ -17,13 +17,17 @@ extra-source-files:  CHANGELOG.md
 
 library
   exposed-modules:
-      Data.Table
-    , Data.SQLHandle
+      Data.Column
+      Data.RefTuple
+      Data.Impl.Classes
+      Data.Impl.Column
+      Data.Impl.Singles
   -- other-modules:
   default-extensions:
       FlexibleContexts
       FlexibleInstances
       ConstraintKinds
+      TypeApplications
       MultiParamTypeClasses
       DeriveFunctor
       DeriveFoldable
