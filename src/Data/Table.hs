@@ -1,7 +1,6 @@
 {-# LANGUAGE GADTSyntax #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-module Table (
+module Data.Table (
   Column(..), Single(..), Tuple(..), select
   , MkCol, buildCol, refer, lift, wherein, order
   , With1(..)

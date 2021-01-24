@@ -1,7 +1,6 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
-module SQLHandle where
+module Data.SQLHandle where
 
-import Table
+import Data.Table
 
 data PreStmt a =
   SCond (Cond a)
@@ -36,6 +35,7 @@ data Ixed a = Ixed Int a | NoIx a
 colStmt :: Column f p -> [(Int, Column f p)]
 colStmt = undefined where
   merge (Ixed j (Known n) : NoIx (Where x) : l) = (j, FromOn n x) : merge l
+  merge _ = undefined
 
   extCol (Join i c c') = Ixed i c : extCol c'
   extCol c@(Known _) = [Ixed 0 c]
