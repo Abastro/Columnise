@@ -11,8 +11,8 @@ import Data.RefTuple (
   , singular, singularTag
   )
 import Data.Impl.Column (
-  Column, Order(..), RowPos(..), Final, known
-  , MkCol, Build, buildCol, refer, lift
+  Column, Order(..), RowPos(..)
+  , MkCol, BuildRef, Build, buildCol, known, refer, lift
   , order, union, intersection, difference, partition, window
   )
 import Data.Impl.Classes ( With(..), With1(..) )

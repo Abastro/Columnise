@@ -1,16 +1,17 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE GADTSyntax #-}
 module Data.Impl.Column (
   Column(..), Order(..), CombineOp(..), RowPos(..)
-  , Final(..), known, Build, liftBuild, liftBuild2
-  , MkCol, buildCol, mkVar, refer, lift
+  , MkCol, BuildRef, Build
+  , buildCol, finishBuild, joining, known, refer, lift
   , order, union, intersection, difference, partition, window
 ) where
 
 import Control.Applicative ( Applicative(..) )
-import Control.Monad.Writer ( Writer, runWriter, tell )
+import Control.Monad.Writer ( Writer, runWriter, tell, listen, pass )
 import Control.Monad.State ( StateT(..), evalStateT, get, modify )
+import Data.Function ( on )
 import Data.Monoid ( Endo(..) )
-import Data.Coerce ( coerce )
 
 import Data.RefTuple ( Tuple(..), Single(..) )
 
@@ -36,74 +37,81 @@ data Column f p where
   Partition :: Tuple f -> [(String, p)] -> Column f p -> Column f p
   Window :: RowPos -> RowPos -> Column f p -> Column f p
 
+-- |Monad for column construction.
+-- Bind operation joins columns being bound.
+newtype MkCol f p a = MkCol (StateT Int (Writer (Endo (Column f p))) a)
+  deriving (Functor, Applicative, Monad)
 
--- |Denotes final in building column.
--- Provided for more safety, especially to disallow leaking 
-newtype Final f p = Final { finalCol :: Column f p }
+-- |Reference to the column being built.
+-- Provided for more safety, especially to disallow weaving columns
+newtype BuildRef f p = BuildRef (Column f p)
 
--- |Refers to the known table
-known :: String -> Final f p
-known = Final . Known
+type Build f p = MkCol f p (BuildRef f p)
 
+-- |Implementation-only function.
+-- Locally finishes builds, processing joins. Does not affect fresh variable state.
+finishBuild :: Build f p -> MkCol f p (Column f p)
+finishBuild (MkCol build) = MkCol . pass $ do
+  (BuildRef fin, Endo apply) <- listen build
+  pure (apply fin, const mempty)
 
-type MkCol f p = StateT Int (Writer (Endo (Column f p)))
-type Build f p = MkCol f p (Final f p)
+-- |Implementation-only function.
+-- Puts column back into build.
+toBuild :: MkCol f p (Column f p) -> Build f p
+toBuild = fmap BuildRef
 
-liftBuild :: (Column f p -> Column f p) -> Build f p -> Build f p
-liftBuild f = fmap . coerceFn $ f where
-  coerceFn f x = coerce (f `asTypeOf` (`asTypeOf` finalCol x)) x
+-- |Implementation-only function.
+-- Joins (& binds) given column.
+joining :: Column f p -> MkCol f p (Tuple f)
+joining col = do
+  index <- fresh
+  MkCol . tell $ Endo $ Join index col
+  return $ TRef index
+  where
+    fresh = MkCol $ get <* modify succ
 
-liftBuild2 :: (Column f p -> Column f p -> Column f p) -> Build f p -> Build f p -> Build f p
-liftBuild2 f = liftA2 . coerceFn $ f where
-  coerceFn f x = coerce (f `asTypeOf` const (`asTypeOf` finalCol x)) x
-
-
--- |Creates a variable
-mkVar :: MkCol f p Int
-mkVar = get <* modify succ
 
 -- |Builds the column
 buildCol :: Build f p -> Column f p
-buildCol form = apply fin
-  where (Final fin, Endo apply) = runWriter . (`evalStateT` 1) $ form
+buildCol (MkCol form) = apply fin where
+  (BuildRef fin, Endo apply) = runWriter . (`evalStateT` 1) $ form
 
--- |Refers to the (final) column, binding it for use as a tuple.
-refer :: Final f p -> MkCol f p (Tuple f)
-refer (Final col) = do
-  index <- mkVar
-  tell $ Endo $ Join index col
-  return $ TRef index
+-- |Refers to the known table
+known :: String -> Build f p
+known = pure . BuildRef . Known
+
+-- |Refers to the column being built, binding it for use as a tuple.
+refer :: Build f p -> MkCol f p (Tuple f)
+refer build = finishBuild build >>= joining
 
 -- |Lifts a tuple to a column.
 lift :: Tuple f -> Build f p
-lift s = return . Final $ Lift s
+lift s = return . BuildRef $ Lift s
 
 
 -- |Gives ordered column. Only the last order statement gets in effect.
 order :: [Order] -> Build f p -> Build f p
-order ords = liftBuild $ Order ords
+order ords = toBuild . fmap (Order ords) . finishBuild
 
--- TODO How to handle Union-After-Order
+-- TODO How to handle Union-After-Order: Join?
 -- |Union
 union :: Build f p -> Build f p -> Build f p
-union = liftBuild2 $ Combine Union
+union = fmap toBuild . liftA2 (Combine Union) `on` finishBuild
 
 -- |Intersection
 intersection :: Build f p -> Build f p -> Build f p
-intersection = liftBuild2 $ Combine Intersect
+intersection = fmap toBuild . liftA2 (Combine Intersect) `on` finishBuild
 
 -- |Difference
 difference :: Build f p -> Build f p -> Build f p
-difference = liftBuild2 $ Combine Diff
+difference = fmap toBuild . liftA2 (Combine Diff) `on` finishBuild
 
 
+-- TODO Partition perhaps should use other stuffs
 -- |Partition
 partition :: Tuple f -> [(String, p)] -> Build f p -> Build f p
-partition index ag = liftBuild (Partition index ag)
+partition index ag = toBuild . fmap (Partition index ag) . finishBuild
 
--- |Window function.
--- Discards order and partition statements in the last parameter if it is lifted tuple.
--- This is so because logically 'ordering single column' does not make sense.
--- TODO Actula discard here..
-window :: RowPos -> RowPos -> (Build f p -> Build f p) -> Build f p -> Build f p
-window pri post win tar = liftBuild (Window pri post) $ win tar
+-- |Window function
+window :: RowPos -> RowPos -> Build f p -> Build f p
+window pri post = toBuild . fmap (Window pri post) . finishBuild

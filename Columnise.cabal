@@ -22,6 +22,7 @@ library
       Data.Impl.Classes
       Data.Impl.Column
       Data.Impl.Singles
+      Data.Impl.Aggregates
   -- other-modules:
   default-extensions:
       FlexibleContexts

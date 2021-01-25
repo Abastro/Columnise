@@ -1,12 +1,9 @@
 {-# LANGUAGE PatternSynonyms #-}
 module Data.Impl.Singles where
 
-import Control.Monad.Writer ( tell )
-import Data.Monoid ( Endo(..) )
-
 import Data.RefTuple ( Single(..) )
 import Data.Impl.Column (
-  Column(..) , MkCol, mkVar
+  Column(..) , MkCol, joining
   )
 import Data.Impl.Classes ( With1(..) )
 
@@ -37,15 +34,12 @@ wrapC :: With1 Cond f => Cond (Single f) -> Single f
 wrapC = Wrap . wrap1
 
 wherein :: (With1 Cond f) => Cond (Single f) -> MkCol f p ()
-wherein cond = do
-  index <- mkVar
-  tell $ Endo $ Join index (Where $ wrapC cond)
-
+wherein cond = () <$ joining (Where $ wrapC cond)
 
 
 data Number n a =
   AsNum !a   -- For slightly better safety, adds extra step for conversion
-  | PrimNum n
+  | PrimNum !n
   | Add (Number n a) (Number n a)
   | Mult (Number n a) (Number n a)
   | Div (Number n a) (Number n a)
@@ -75,12 +69,12 @@ wrapF = Wrap . wrap1
 
 type WithInt = With1 (Number Int)
 type WithFloat = With1 (Number Float)
-class (WithInt f, WithFloat f) => Numeric f where
+type Numeric f = (WithInt f, WithFloat f)
 
 
 data Txt a =
   AsTxt !a
-  | PrimTxt String
+  | PrimTxt !String
   | TAppend (Txt a) (Txt a)
 
 instance Semigroup (Txt a) where
