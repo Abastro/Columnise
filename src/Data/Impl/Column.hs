@@ -1,10 +1,12 @@
 {-# LANGUAGE GADTSyntax #-}
 module Data.Impl.Column (
   Column(..), CombineOp(..), RowPos(..)
-  , Final(..), known, Build, finalProc
-  , MkCol, buildCol, mkVar, refer, lift, partition, window
+  , Final(..), known, Build, liftBuild, liftBuild2
+  , MkCol, buildCol, mkVar, refer, lift
+  , union, intersection, difference, partition, window
 ) where
 
+import Control.Applicative ( Applicative(..) )
 import Control.Monad.Writer ( Writer, runWriter, tell )
 import Control.Monad.State ( StateT(..), evalStateT, get, modify )
 import Data.Monoid ( Endo(..) )
@@ -16,7 +18,6 @@ data CombineOp = Union | Intersect | Diff
 data RowPos = RelPos Int | MinPos | MaxPos
 
 -- |Column data with operation f (Variable is indexed by Int)
--- TODO This requires types for inspecting which field the tuple has
 data Column f p where
   Known :: String -> Column f p
   Lift :: Tuple f -> Column f p
@@ -25,7 +26,7 @@ data Column f p where
 
   Combine :: CombineOp -> Column f p -> Column f p -> Column f p
   Order :: Single f -> Column f p -> Column f p
-  Partition :: Tuple f -> (String -> p) -> Column f p -> Column f p
+  Partition :: Tuple f -> [(String, p)] -> Column f p -> Column f p
   Window :: RowPos -> RowPos -> Column f p -> Column f p
 
 
@@ -45,9 +46,13 @@ known = Final . Known
 type MkCol f p = StateT Int (Writer (Endo (Column f p)))
 type Build f p = MkCol f p (Final f p)
 
-finalProc :: (Column f p -> Column f p) -> Build f p -> Build f p
-finalProc f = (fmap . coerceFn) f where
+liftBuild :: (Column f p -> Column f p) -> Build f p -> Build f p
+liftBuild f = fmap . coerceFn $ f where
   coerceFn f x = coerce (f `asTypeOf` (`asTypeOf` finalCol x)) x
+
+liftBuild2 :: (Column f p -> Column f p -> Column f p) -> Build f p -> Build f p -> Build f p
+liftBuild2 f = liftA2 . coerceFn $ f where
+  coerceFn f x = coerce (f `asTypeOf` const (`asTypeOf` finalCol x)) x
 
 
 -- |Creates a variable
@@ -66,17 +71,30 @@ refer (Final col) = do
   tell $ Endo $ Join index col
   return $ TRef index
 
--- |Lifts a tuple to a column (with single row).
+-- |Lifts a tuple to a column.
 lift :: Tuple f -> Build f p
 lift s = return . Final $ Lift s
 
+-- TODO How to handle Union-After-Order
+
+
+union :: Build f p -> Build f p -> Build f p
+union = liftBuild2 $ Combine Union
+
+intersection :: Build f p -> Build f p -> Build f p
+intersection = liftBuild2 $ Combine Intersect
+
+difference :: Build f p -> Build f p -> Build f p
+difference = liftBuild2 $ Combine Diff
+
+
 -- |Partition
-partition :: Tuple f -> (String -> p) -> Build f p -> Build f p
-partition index ag = finalProc (Partition index ag)
+partition :: Tuple f -> [(String, p)] -> Build f p -> Build f p
+partition index ag = liftBuild (Partition index ag)
 
 -- |Window function.
 -- Discards order and partition statements in the last parameter if it is lifted tuple.
 -- This is so because logically 'ordering single column' does not make sense.
 -- TODO Actula discard here..
 window :: RowPos -> RowPos -> (Build f p -> Build f p) -> Build f p -> Build f p
-window pri post win tar = finalProc (Window pri post) $ win tar
+window pri post win tar = liftBuild (Window pri post) $ win tar

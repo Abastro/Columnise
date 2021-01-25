@@ -1,26 +1,34 @@
 module Data.Impl.Aggregates (
   BasicAggregates(..), BasicAggs
-  , ccount, csum, cmax, cmin, cavg
+  , index, ccount, csum, cmax, cmin, cavg
 ) where
 
 import Data.Impl.Classes ( With(..) )
 
 data BasicAggregates =
-  Count | Sum | Max | Min | Avg
+  Index String
+  | Count
+  | Sum String | Avg String
+  | Max String | Min String
 
 type BasicAggs = With BasicAggregates
+
+-- |Use partition index as an aggregate.
+index :: BasicAggs p => String -> (String, p)
+index n = (n, wrap $ Index n)
 
 ccount :: BasicAggs p => p
 ccount = wrap Count
 
-csum :: BasicAggs p => p
-csum = wrap Sum
+csum :: BasicAggs p => String -> p
+csum = wrap . Sum
 
-cmax :: BasicAggs p => p
-cmax = wrap Max
+cavg :: BasicAggs p => String -> p
+cavg = wrap . Avg
 
-cmin :: BasicAggs p => p
-cmin = wrap Min
+cmax :: BasicAggs p => String -> p
+cmax = wrap . Max
 
-cavg :: BasicAggs p => p
-cavg = wrap Avg
+cmin :: BasicAggs p => String -> p
+cmin = wrap . Min
+
