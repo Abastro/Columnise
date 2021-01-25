@@ -1,9 +1,9 @@
 {-# LANGUAGE GADTSyntax #-}
 module Data.Impl.Column (
-  Column(..), CombineOp(..), RowPos(..)
+  Column(..), Order(..), CombineOp(..), RowPos(..)
   , Final(..), known, Build, liftBuild, liftBuild2
   , MkCol, buildCol, mkVar, refer, lift
-  , union, intersection, difference, partition, window
+  , order, union, intersection, difference, partition, window
 ) where
 
 import Control.Applicative ( Applicative(..) )
@@ -14,6 +14,13 @@ import Data.Coerce ( coerce )
 
 import Data.RefTuple ( Tuple(..), Single(..) )
 
+-- TODO Typecheck column statements
+-- TODO Insert, Update, Delete
+
+data Order =
+  Asc String | Dsc String
+  -- |Omits certain field used for ordering from the visible selection
+  | Omit Order
 data CombineOp = Union | Intersect | Diff
 data RowPos = RelPos Int | MinPos | MaxPos
 
@@ -25,13 +32,9 @@ data Column f p where
   Join :: Int -> Column f p -> Column f p -> Column f p
 
   Combine :: CombineOp -> Column f p -> Column f p -> Column f p
-  Order :: Single f -> Column f p -> Column f p
+  Order :: [Order] -> Column f p -> Column f p
   Partition :: Tuple f -> [(String, p)] -> Column f p -> Column f p
   Window :: RowPos -> RowPos -> Column f p -> Column f p
-
-
--- TODO Typecheck column statements
--- TODO Insert, Update, Delete
 
 
 -- |Denotes final in building column.
@@ -75,15 +78,21 @@ refer (Final col) = do
 lift :: Tuple f -> Build f p
 lift s = return . Final $ Lift s
 
+
+-- |Gives ordered column. Only the last order statement gets in effect.
+order :: [Order] -> Build f p -> Build f p
+order ords = liftBuild $ Order ords
+
 -- TODO How to handle Union-After-Order
-
-
+-- |Union
 union :: Build f p -> Build f p -> Build f p
 union = liftBuild2 $ Combine Union
 
+-- |Intersection
 intersection :: Build f p -> Build f p -> Build f p
 intersection = liftBuild2 $ Combine Intersect
 
+-- |Difference
 difference :: Build f p -> Build f p -> Build f p
 difference = liftBuild2 $ Combine Diff
 

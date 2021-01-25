@@ -5,16 +5,12 @@ import Data.Column
 
 data PreStmt a =
   SCond (Cond a)
-  | SOrd (Order a)
   | SInt (Number Int a)
   | SFloat (Number Float a)
   | STxt (Txt a)
 
 instance With1 Cond PreStmt where
   wrap1 = SCond
-instance With1 Order PreStmt where
-  wrap1 = SOrd
-instance Basics PreStmt
 
 instance With1 (Number Int) PreStmt where
   wrap1 = SInt

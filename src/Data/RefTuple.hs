@@ -1,5 +1,5 @@
 module Data.RefTuple (
-  Single(..), Tuple(..), select, singular, singularTag
+  Single(..), Tuple(..), as, select, singular, singularTag
 ) where
 
 -- |Singular data with operation f
@@ -21,6 +21,11 @@ instance Semigroup (Tuple f) where
   t <> t' = TProd t t'
 instance Monoid (Tuple f) where
   mempty = Tuple []
+
+-- |Names the object, mainly as syntactic utility
+as :: a -> String -> (String, a)
+as = flip (,)
+infix 7 `as`
 
 -- |Selects certain fields from the tuple
 select :: [String] -> Tuple f -> Tuple f

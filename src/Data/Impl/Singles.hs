@@ -6,10 +6,12 @@ import Data.Monoid ( Endo(..) )
 
 import Data.RefTuple ( Single(..) )
 import Data.Impl.Column (
-  Column(..) , MkCol, Build, liftBuild, mkVar
+  Column(..) , MkCol, mkVar
   )
 import Data.Impl.Classes ( With1(..) )
 
+-- TODO Conventionally, boolean is stored as small number.
+-- Might better represent that part.
 data Cond a =
   a :=: a | a :>: a | a :<: a
   | Cand (Cond a) (Cond a)
@@ -29,24 +31,16 @@ pattern x :>=: y = Cnot (x :<: y)
 pattern (:<=:) :: a -> a -> Cond a
 pattern x :<=: y = Cnot (x :>: y)
 
+type WithCond = With1 Cond
+
+wrapC :: With1 Cond f => Cond (Single f) -> Single f
+wrapC = Wrap . wrap1
 
 wherein :: (With1 Cond f) => Cond (Single f) -> MkCol f p ()
 wherein cond = do
   index <- mkVar
-  tell $ Endo $ Join index (Where $ Wrap . wrap1 $ cond)
+  tell $ Endo $ Join index (Where $ wrapC cond)
 
-
-data Order a =
-  OrderBy a
-  | Rev (Order a) | Chain (Order a) (Order a)
-infixl 1 `Chain`
-
--- |Gives ordered column. Only the last order statement gets in effect.
-order :: (With1 Order f) => Order (Single f) -> Build f p -> Build f p
-order ord = liftBuild (Order $ Wrap . wrap1 $ ord)
-
--- |Basic operations which are most likely supported
-class (With1 Cond f, With1 Order f) => Basics f where
 
 
 data Number n a =
@@ -71,9 +65,11 @@ instance Fractional n => Fractional (Number n a) where
   fromRational = PrimNum . fromRational
 
 -- TODO Add for other primitive types
+-- |Wraps an integer into the field
 wrapI :: With1 (Number Int) f => Number Int (Single f) -> Single f
 wrapI = Wrap . wrap1
 
+-- |Wraps a float into the field
 wrapF :: With1 (Number Float) f => Number Float (Single f) -> Single f
 wrapF = Wrap . wrap1
 
