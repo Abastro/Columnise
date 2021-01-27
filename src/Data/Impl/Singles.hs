@@ -1,9 +1,11 @@
 {-# LANGUAGE PatternSynonyms #-}
 module Data.Impl.Singles where
 
+-- TODO Better export
+
 import Data.RefTuple ( Single(..) )
 import Data.Impl.Column (
-  Column(..) , MkCol, joining
+  ColBody(..), defWithBody, MkCol, joining
   )
 import Data.Impl.Classes ( With1(..) )
 
@@ -34,7 +36,7 @@ wrapC :: With1 Cond f => Cond (Single f) -> Single f
 wrapC = Wrap . wrap1
 
 wherein :: (With1 Cond f) => Cond (Single f) -> MkCol f p ()
-wherein cond = () <$ joining (Where $ wrapC cond)
+wherein cond = () <$ joining (defWithBody . Where $ wrapC cond)
 
 
 data Number n a =

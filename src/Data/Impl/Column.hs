@@ -1,7 +1,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE GADTSyntax #-}
 module Data.Impl.Column (
-  Column(..), Order(..), CombineOp(..), RowPos(..)
+  Column(..), ColBody(..), defColumn, defWithBody
+  , Order(..), PartIndex(..), CombineOp(..), RowPos(..)
   , MkCol, BuildRef, Build
   , buildCol, finishBuild, joining, known, refer, lift
   , order, union, intersection, difference, partition, window
@@ -18,32 +19,53 @@ import Data.RefTuple ( Tuple(..), Single(..) )
 -- TODO Typecheck column statements
 -- TODO Insert, Update, Delete
 
+-- |Denotes ordering of tuple
 data Order =
   Asc String | Dsc String
   -- |Omits certain field used for ordering from the visible selection
   | Omit Order
+-- |Denotes tuple fields used for partition index
+data PartIndex = Keep String | Drop String
 data CombineOp = Union | Intersect | Diff
+-- |Relative row position
 data RowPos = RelPos Int | MinPos | MaxPos
 
--- |Column data with operation f (Variable is indexed by Int)
-data Column f p where
-  Known :: String -> Column f p
-  Lift :: Tuple f -> Column f p
-  Where :: Single f -> Column f p
-  Join :: Int -> Column f p -> Column f p -> Column f p
+data ColBody f p where
+  Known :: String -> ColBody f p
+  Lift :: Tuple f -> ColBody f p
+  Where :: Single f -> ColBody f p
+  -- TODO De-bruijin indexing could make this int obsolete
+  Join :: Int -> Column f p -> ColBody f p -> ColBody f p
+  Combine :: CombineOp -> Column f p -> Column f p -> ColBody f p
 
-  Combine :: CombineOp -> Column f p -> Column f p -> Column f p
-  Order :: [Order] -> Column f p -> Column f p
-  Partition :: Tuple f -> [(String, p)] -> Column f p -> Column f p
-  Window :: RowPos -> RowPos -> Column f p -> Column f p
+-- |Column data with operation f (Variable is indexed by Int)
+data Column f p = Column {
+  body :: ColBody f p
+  , colOrd :: Maybe [Order]
+  , colPart :: Maybe ([PartIndex], [(String, p)])
+  , colWindow :: Maybe (RowPos, RowPos)
+}
+
+-- |Implementation-only function.
+-- Gives default column.
+defColumn :: Column f p
+defColumn = Column {
+  body = Lift $ Tuple []
+  , colOrd = Nothing, colPart = Nothing, colWindow = Nothing
+}
+
+-- |Implementation-only function.
+-- Gives default column with certain body.
+defWithBody :: ColBody f p -> Column f p
+defWithBody pBody = defColumn { body = pBody }
 
 -- |Monad for column construction.
 -- Bind operation joins columns being bound.
-newtype MkCol f p a = MkCol (StateT Int (Writer (Endo (Column f p))) a)
+newtype MkCol f p a = MkCol (StateT Int (Writer (Endo (ColBody f p))) a)
   deriving (Functor, Applicative, Monad)
 
 -- |Reference to the column being built.
--- Provided for more safety, especially to disallow weaving columns
+-- Provided for more safety, especially to disallow weaving built columns.
 newtype BuildRef f p = BuildRef (Column f p)
 
 type Build f p = MkCol f p (BuildRef f p)
@@ -53,7 +75,7 @@ type Build f p = MkCol f p (BuildRef f p)
 finishBuild :: Build f p -> MkCol f p (Column f p)
 finishBuild (MkCol build) = MkCol . pass $ do
   (BuildRef fin, Endo apply) <- listen build
-  pure (apply fin, const mempty)
+  pure (fin { body = apply $ body fin }, const mempty)
 
 -- |Implementation-only function.
 -- Puts column back into build.
@@ -73,12 +95,12 @@ joining col = do
 
 -- |Builds the column
 buildCol :: Build f p -> Column f p
-buildCol (MkCol form) = apply fin where
-  (BuildRef fin, Endo apply) = runWriter . (`evalStateT` 1) $ form
+buildCol build = fst . runWriter . (`evalStateT` 1) $ form where
+  MkCol form = finishBuild build
 
 -- |Refers to the known table
 known :: String -> Build f p
-known = pure . BuildRef . Known
+known = return . BuildRef . defWithBody . Known
 
 -- |Refers to the column being built, binding it for use as a tuple.
 refer :: Build f p -> MkCol f p (Tuple f)
@@ -86,32 +108,40 @@ refer build = finishBuild build >>= joining
 
 -- |Lifts a tuple to a column.
 lift :: Tuple f -> Build f p
-lift s = return . BuildRef $ Lift s
+lift = return . BuildRef . defWithBody . Lift
 
 
--- |Gives ordered column. Only the last order statement gets in effect.
+-- |Orders the column being built by fields specified by the order.
+-- Should be applied at last, as its effect does not leak out when it is inside join.
+-- Only outmost one would be in effect when applying order twice.
 order :: [Order] -> Build f p -> Build f p
-order ords = toBuild . fmap (Order ords) . finishBuild
+order ords = toBuild . fmap (\x -> x{ colOrd = Just ords }) . finishBuild
+
+-- |Partition
+-- Aggregates over entire column when empty list is passed to part index.
+-- Should be applied as last, as its effect does not leak out when it is inside join.
+-- Only outmost one would be in effect when applying partition twice.
+partition :: [PartIndex] -> [(String, p)] -> Build f p -> Build f p
+partition index ag = toBuild . fmap (\x -> x{ colPart = Just (index, ag) }) . finishBuild
+
+-- TODO Interaction with union
+-- |Window function
+-- Works in-place, alike join.
+-- Its entire purpose is for aggregates, so it is no-op when not coupled with partition inside.
+window :: RowPos -> RowPos -> Build f p -> Build f p
+window pri post = toBuild . fmap (\x -> x{ colWindow = Just (pri, post) }) . finishBuild
+
 
 -- TODO How to handle Union-After-Order: Join?
 -- |Union
 union :: Build f p -> Build f p -> Build f p
-union = fmap toBuild . liftA2 (Combine Union) `on` finishBuild
+union = fmap toBuild . liftA2 (fmap defWithBody . Combine Union) `on` finishBuild
 
 -- |Intersection
 intersection :: Build f p -> Build f p -> Build f p
-intersection = fmap toBuild . liftA2 (Combine Intersect) `on` finishBuild
+intersection = fmap toBuild . liftA2 (fmap defWithBody . Combine Intersect) `on` finishBuild
 
 -- |Difference
 difference :: Build f p -> Build f p -> Build f p
-difference = fmap toBuild . liftA2 (Combine Diff) `on` finishBuild
+difference = fmap toBuild . liftA2 (fmap defWithBody . Combine Diff) `on` finishBuild
 
-
--- TODO Partition perhaps should use other stuffs
--- |Partition
-partition :: Tuple f -> [(String, p)] -> Build f p -> Build f p
-partition index ag = toBuild . fmap (Partition index ag) . finishBuild
-
--- |Window function
-window :: RowPos -> RowPos -> Build f p -> Build f p
-window pri post = toBuild . fmap (Window pri post) . finishBuild
