@@ -1,4 +1,7 @@
 /dist-newstyle
+.hlint.yaml
 
 *.code-workspace
+.vscode/
+
 Setup.hs

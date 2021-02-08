@@ -2,7 +2,8 @@ module Data.Impl.Classes (
   With(..), With1(..)
 ) where
 
--- TODO Class for aggregates
+-- TODO Proper class for aggregates
+-- TODO f for Single f which supports simplification
 
 -- |Containment of kind *
 class With p q where

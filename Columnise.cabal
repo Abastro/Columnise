@@ -19,6 +19,7 @@ library
   exposed-modules:
       Data.Column
       Data.RefTuple
+      Data.Handle.SQLHandle
       Data.Impl.Classes
       Data.Impl.Column
       Data.Impl.Singles
@@ -33,6 +34,7 @@ library
       DeriveFunctor
       DeriveFoldable
       DeriveTraversable
+      GeneralizedNewtypeDeriving
       TupleSections
   build-depends:
       base >=4.7 && <5
@@ -42,7 +44,7 @@ library
     , mtl ==2.2.*
     , text ==1.2.*
   ghc-options:
-    -fwarn-incomplete-patterns
+    -W
   hs-source-dirs:      src
   default-language:    Haskell2010
 

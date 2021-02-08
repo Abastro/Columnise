@@ -11,9 +11,9 @@ import Data.RefTuple (
   , singular, singularTag
   )
 import Data.Impl.Column (
-  Column, Order(..), PartIndex(..), RowPos(..)
-  , MkCol, BuildRef, Build, buildCol, known, refer, lift
-  , order, union, intersection, difference, partition, window
+  Column, omit, Order, OrdDir(..), asc, dsc, PartIndex, part, RowPos(..)
+  , MkCol, Build, BuiltColumn, build, known, refer, lift
+  , order, union, intersection, difference, partitions, window
   )
 import Data.Impl.Classes ( With(..), With1(..) )
 import Data.Impl.Singles

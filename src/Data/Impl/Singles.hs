@@ -9,13 +9,15 @@ import Data.Impl.Column (
   )
 import Data.Impl.Classes ( With1(..) )
 
--- TODO Conventionally, boolean is stored as small number.
+-- TODO Conventionally, boolean is stored as a small number.
 -- Might better represent that part.
 data Cond a =
-  a :=: a | a :>: a | a :<: a
+  AsCond !a
+  | a :=: a | a :>: a | a :<: a
   | Cand (Cond a) (Cond a)
   | Cor (Cond a) (Cond a)
   | Cnot (Cond a)
+  deriving Functor
 infix 4 :=:
 infix 4 :>:
 infix 4 :<:
@@ -46,6 +48,7 @@ data Number n a =
   | Mult (Number n a) (Number n a)
   | Div (Number n a) (Number n a)
   | Negate (Number n a)
+  deriving Functor
 
 -- Inheriting typeclass only for overloading
 instance Num n => Num (Number n a) where
@@ -78,6 +81,7 @@ data Txt a =
   AsTxt !a
   | PrimTxt !String
   | TAppend (Txt a) (Txt a)
+  deriving Functor
 
 instance Semigroup (Txt a) where
   (<>) = TAppend
