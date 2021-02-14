@@ -3,7 +3,7 @@ module Data.Impl.Aggregates (
   , index, indexAs, ccount, csum, cmax, cmin, cavg
 ) where
 
-import Data.Impl.Classes ( With(..) )
+import Data.Impl.Classes ( Field(..), WithA(..) )
 
 data BasicAggregates =
   Index String
@@ -11,28 +11,28 @@ data BasicAggregates =
   | Sum String | Avg String
   | Max String | Min String
 
-type Aggregates = With BasicAggregates
+type Aggregates = WithA BasicAggregates
 
 -- |Use partition index as an aggregate.
-index :: Aggregates p => String -> (String, p)
+index :: Aggregates f => String -> (String, Aggregate f)
 index n = indexAs n n
 
 -- |Use partition index as an aggregate, giving different name.
-indexAs :: Aggregates p => String -> String -> (String, p)
-indexAs f name = (name, wrap $ Index f)
+indexAs :: Aggregates f => String -> String -> (String, Aggregate f)
+indexAs f name = (name, wrapA $ Index f)
 
-ccount :: Aggregates p => p
-ccount = wrap Count
+ccount :: Aggregates f => Aggregate f
+ccount = wrapA Count
 
-csum :: Aggregates p => String -> p
-csum = wrap . Sum
+csum :: Aggregates f => String -> Aggregate f
+csum = wrapA . Sum
 
-cavg :: Aggregates p => String -> p
-cavg = wrap . Avg
+cavg :: Aggregates f => String -> Aggregate f
+cavg = wrapA . Avg
 
-cmax :: Aggregates p => String -> p
-cmax = wrap . Max
+cmax :: Aggregates f => String -> Aggregate f
+cmax = wrapA . Max
 
-cmin :: Aggregates p => String -> p
-cmin = wrap . Min
+cmin :: Aggregates f => String -> Aggregate f
+cmin = wrapA . Min
 

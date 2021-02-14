@@ -20,6 +20,7 @@ library
       Data.Column
       Data.RefTuple
       Data.Handle.SQLHandle
+      Data.Impl.Utils
       Data.Impl.Classes
       Data.Impl.Column
       Data.Impl.Singles
@@ -41,6 +42,7 @@ library
     , bytestring ==0.10.*
     , containers ==0.6.*
     , direct-sqlite ==2.3.*
+    , transformers ==0.5.*
     , mtl ==2.2.*
     , text ==1.2.*
   ghc-options:

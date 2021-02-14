@@ -5,7 +5,7 @@ import Data.Column
 main :: IO ()
 main = putStrLn "Test suite not yet implemented."
 
-example1 :: (WithCond f, Numeric f) => Single f -> BuiltColumn f p
+example1 :: (WithCond f, Numeric f) => Single f -> BuiltColumn f
 example1 ident = build $ order [asc "begin", dsc "end"] $ do
   t <- refer $ known "Time"
   c <- refer $ known "Class"
@@ -13,9 +13,9 @@ example1 ident = build $ order [asc "begin", dsc "end"] $ do
   wherein $ c:."sem" :=: t:."sem"
   lift $ select ["course", "begin", "end"] c
 
-example2 :: (WithCond f, Aggregates p) => BuiltColumn f p
+example2 :: (WithCond f, Aggregates f) => BuiltColumn f
 example2 = build $ order [dsc "numClasses"]
-  . partitions [part "ident"] [
+  . partitions ["ident"] [
     "ident" `indexAs` "class"
     , ccount `as` "numClasses"
     , cmin "begin" `as` "first"

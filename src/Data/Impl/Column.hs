@@ -1,26 +1,27 @@
 {-# LANGUAGE GADTSyntax #-}
 module Data.Impl.Column (
-  Column, ColProps(..), ColBody(..), defColumn, defWithBody
-  , Omits(..), omit, OrdDir(..), Order, asc, dsc, PartIndex, part
-  , CombineOp(..), RowPos(..)
-  , Fresh, fresh, runFresh, MkCol, Build, BuiltColumn
-  , build, joining, known, refer, lift
+  Column, ColBody(..), ColProps, CProps(..), isCPEmpty
+  , Omits(..), omit, OrdDir(..), Order, asc, dsc, CombineOp(..), RowPos(..)
+  , MkCol, Build, BuiltColumn, build, joining, known, refer, lift
   , order, union, intersection, difference, partitions, window
 ) where
 
 import Control.Applicative
+import Control.Monad.Trans.Cont
 import Control.Monad.Writer hiding ( lift )
-import Control.Monad.State hiding ( lift )
 import qualified Control.Monad.Trans as T
 import Data.Function ( on )
+import Data.Maybe
 
+import Data.Impl.Utils
+import Data.Impl.Classes
 import Data.RefTuple ( Tuple(..), Single(..) )
 
 -- TODO Insert, Update, Delete
 -- TODO Typecheck column statements
 
 -- |Denotes omittable
-data Omits a = Omits { omits :: Bool, ins :: a } deriving Eq
+data Omits a = Omits { omits :: Bool, ins :: a } deriving (Eq, Functor)
 -- |Omits certain field used for ordering/partition from the selection output.
 -- Should be coupled with select or tuple construction.
 -- If it is directly from referring a column, it is a no-op.
@@ -38,143 +39,129 @@ asc = Omits False . (Asc, )
 dsc :: String -> Order
 dsc = Omits False . (Dsc, )
 
--- |Denotes tuple fields used for partition index
-type PartIndex = Omits String
--- |Creates partition index
-part :: String -> PartIndex
-part = Omits False
-
 data CombineOp = Union | Intersect | Diff deriving Eq
 -- |Relative row position
 data RowPos = MinPos | RelPos Int | MaxPos deriving (Eq, Ord)
 
-data ColBody f p where
-  Known :: String -> ColBody f p
-  Lift :: Tuple f -> ColBody f p
-  Where :: Single f -> ColBody f p
+data ColBody f where
+  Known :: String -> ColBody f
+  Lift :: Tuple f -> ColBody f
+  Where :: Single f -> ColBody f
   -- MAYBE De-bruijin indexing could make this int obsolete
-  Join :: Int -> Column f p -> ColBody f p -> ColBody f p
-  Combine :: CombineOp -> ColBody f p -> ColBody f p -> ColBody f p
+  Join :: Int -> Column f -> ColBody f -> ColBody f
+  Combine :: CombineOp -> ColBody f -> ColBody f -> ColBody f
 
-data ColProps p a = CProps {
-  colBody :: a
-  , colOrd :: [Order]
-  , colPart :: Maybe ([PartIndex], [(String, p)])
-  , colWindow :: Maybe (RowPos, RowPos)
-} deriving (Functor, Foldable, Traversable)
+type ColProps f = WithProp (CProps f)
+data CProps f = CProps{
+  cOrd :: [Order]
+  -- Keys to apply partition by, aggregate selection
+  , cPart :: Maybe ([String], [(String, Aggregate f)])
+  , cWindow :: Maybe (RowPos, RowPos)
+}
+-- Not lawful, but serves purpose of limiting use of window
+instance Semigroup (CProps f) where
+  CProps r p w <> CProps r' p' w' = CProps r'' p'' $ p'' *> (w <|> w')
+    where r'' = if null r then r' else r; p'' = p <|> p'
+instance Monoid (CProps f) where
+  mempty = CProps [] Nothing Nothing
+
+-- |Implementation-only function.
+-- Checks if column property is empty.
+isCPEmpty :: CProps f -> Bool
+isCPEmpty (CProps r p w) = null r && isNothing p && isNothing w
 
 -- |Column data with operation f (Variable is indexed by Int)
-type Column f p = ColProps p (ColBody f p)
-
--- |Implementation-only function.
--- Gives default column.
-defColumn :: Column f p
-defColumn = CProps {
-  colBody = Lift mempty, colOrd = [], colPart = Nothing, colWindow = Nothing
-}
-
--- |Implementation-only function.
--- Gives default column with certain body.
-defWithBody :: ColBody f p -> Column f p
-defWithBody pBody = pBody <$ defColumn
+type Column f = ColProps f (ColBody f)
 
 
--- |Monad for fresh variable names.
-newtype Fresh a = Fresh (State Int a)
+newtype Builder r a = Builder (ContT r Fresh a)
   deriving (Functor, Applicative, Monad)
-
--- |Implementation-only function.
--- Runs fresh monad to get the result.
-runFresh :: Fresh a -> a
-runFresh (Fresh m) = evalState m 1
-
--- |Implementation-only function.
--- Gives fresh variable name.
-fresh :: Fresh Int
-fresh = Fresh $ get <* modify succ
+type BdBody f = Builder (ColBody f)
+type BdCol f = Builder (Column f)
 
 -- |Monad for column construction.
 -- Bind operation joins columns being bound.
-newtype MkCol f p a = MkCol ((WriterT (Endo (ColBody f p)) Fresh) a)
+newtype MkCol f a = MkCol ((WriterT (Endo (ColBody f)) Fresh) a)
   deriving (Functor, Applicative, Monad)
 
-type Build f p = MkCol f p (Column f p)
-type BuiltColumn f p = Fresh (Column f p)
+type Build f = MkCol f (Column f)
+type BuiltColumn f = Fresh (Column f)
 
 -- |Implementation-only function.
 -- Locally finishes builds, processing joins. Does not affect fresh binding state.
-finishBuild :: Build f p -> Build f p
+finishBuild :: Build f -> Build f
 finishBuild (MkCol build) = MkCol . pass $ do
   (fin, Endo apply) <- listen build
   pure (apply <$> fin, const mempty)
 
 -- |Implementation-only function.
 -- Joins (& binds) given column.
-joining :: Column f p -> MkCol f p (Tuple f)
+joining :: Column f -> MkCol f (Tuple f)
 joining col = do
   index <- MkCol $ T.lift fresh
   MkCol . tell $ Endo $ Join index col
   return $ TRef index
 
 -- |Builds the column
-build :: Build f p -> BuiltColumn f p
+build :: Build f -> BuiltColumn f
 build build = fmap fst . runWriterT $ form where
   MkCol form = finishBuild build
 
 -- |Refers to the known table
-known :: String -> Build f p
-known = return . defWithBody . Known
+known :: String -> Build f
+known = return . fromBody . Known
 
 -- |Refers to the column being built, binding it for use as a tuple.
-refer :: Build f p -> MkCol f p (Tuple f)
+refer :: Build f -> MkCol f (Tuple f)
 refer build = finishBuild build >>= joining
 
 -- |Lifts a tuple to a column.
-lift :: Tuple f -> Build f p
-lift = return . defWithBody . Lift
+lift :: Tuple f -> Build f
+lift = return . fromBody . Lift
 
 
 -- |Orders the column being built by fields specified by the order.
 -- *Should be applied at last*, as its effect does not leak out from inside join.
+-- (Note that, still, joined table is joined with the specified order)
 -- Only outmost one would be in effect when applying order twice.
 -- Without window, comes after partition. With window, comes before partition.
-order :: [Order] -> Build f p -> Build f p
-order ords = fmap (\x -> x{ colOrd = ords }) . finishBuild
+order :: [Order] -> Build f -> Build f
+order ords = fmap (<* fromProp mempty{ cOrd = ords }) . finishBuild
 
 -- |Partition
 -- Aggregates over entire column when empty list is passed to part index.
--- Should be applied as last, as its effect does not leak out from inside join.
+-- *Should be applied as last*, as its effect does not leak out from inside join.
 -- Only outmost one would be in effect when applying partition twice.
-partitions :: [PartIndex] -> [(String, p)] -> Build f p -> Build f p
-partitions index ag = fmap (\x -> x{ colPart = Just (index, ag) }) . finishBuild
+partitions :: [String] -> [(String, Aggregate f)] -> Build f -> Build f
+partitions index ag = fmap (<* fromProp mempty{ cPart = Just (index, ag) }) . finishBuild
 
 -- TODO Interaction with window & union
 -- |Window function
 -- Works in-place, alike join.
 -- Its entire purpose is for aggregates,
 -- so it is no-op when not coupled with partition "inside".
-window :: RowPos -> RowPos -> Build f p -> Build f p
-window pri post = fmap (\x -> x{ colWindow = (pri, post) <$ colPart x }) . finishBuild
+window :: RowPos -> RowPos -> Build f -> Build f
+window pri post = fmap (<* fromProp mempty{ cWindow = Just (pri, post) }) . finishBuild
 
 
 -- TODO How to handle Union-After-Order: Join?
 -- |Union
 -- Discards any transformations in each part, e.g. order, partition, window.
 -- Refer and join the part to preserve these operations.
-union :: Build f p -> Build f p -> Build f p
-union = liftA2 (fmap defWithBody . Combine Union `on` colBody) `on` finishBuild
+union :: Build f -> Build f -> Build f
+union = liftA2 (fmap fromBody . Combine Union `on` body) `on` finishBuild
 
 -- |Intersection
 -- Discards any transformations in each part, e.g. order, partition, window.
 -- Refer and join the part to preserve these operations.
-intersection :: Build f p -> Build f p -> Build f p
-intersection = liftA2 (fmap defWithBody . Combine Intersect `on` colBody) `on` finishBuild
+intersection :: Build f -> Build f -> Build f
+intersection = liftA2 (fmap fromBody . Combine Intersect `on` body) `on` finishBuild
 
 -- |Difference
 -- Discards any transformations in each part, e.g. order, partition, window.
 -- Refer and join the part to preserve these operations.
-difference :: Build f p -> Build f p -> Build f p
-difference = liftA2 (fmap defWithBody . Combine Diff `on` colBody) `on` finishBuild
+difference :: Build f -> Build f -> Build f
+difference = liftA2 (fmap fromBody . Combine Diff `on` body) `on` finishBuild
 
 infixr 2 `union`
 infixr 3 `intersection`

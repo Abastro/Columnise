@@ -1,16 +1,21 @@
+{-# LANGUAGE TypeFamilies #-}
 module Data.Impl.Classes (
-  With(..), With1(..)
+  Field(..), WithA(..), WithF(..)
 ) where
 
 -- TODO Proper class for aggregates
 -- TODO f for Single f which supports simplification
 
+-- |Class denoting the field type
+class Functor f => Field f where
+  data Aggregate f
+
 -- |Containment of kind *
-class With p q where
-  -- |Wraps form p to united form q. Use with caution, this can cause type mismatch.
-  wrap :: p -> q
+class Field f => WithA p f where
+  -- |Wraps into aggregates.
+  wrapA :: p -> Aggregate f
 
 -- |Containment of kind *->*
-class With1 f g where
-  -- |Wraps form f to unified form g. Use with caution, this can cause type mismatch.
-  wrap1 :: f a -> g a
+class Field f => WithF g f where
+  -- |Wraps into the field.
+  wrap :: g a -> f a

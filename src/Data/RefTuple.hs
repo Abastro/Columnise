@@ -6,6 +6,7 @@ import qualified Data.Set as S
 import qualified Data.Map as M
 
 -- |Singular data with operation f
+-- Note that :. interacts poorly with TProd of TRefs. Avoid this if possible.
 data Single f =
   Wrap (f (Single f))
   | (Tuple f) :. String

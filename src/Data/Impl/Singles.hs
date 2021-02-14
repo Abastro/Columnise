@@ -4,10 +4,9 @@ module Data.Impl.Singles where
 -- TODO Better export
 
 import Data.RefTuple ( Single(..) )
-import Data.Impl.Column (
-  ColBody(..), defWithBody, MkCol, joining
-  )
-import Data.Impl.Classes ( With1(..) )
+import Data.Impl.Utils
+import Data.Impl.Column ( ColBody(..), MkCol, joining )
+import Data.Impl.Classes
 
 -- TODO Conventionally, boolean is stored as a small number.
 -- Might better represent that part.
@@ -32,13 +31,13 @@ pattern x :>=: y = Cnot (x :<: y)
 pattern (:<=:) :: a -> a -> Cond a
 pattern x :<=: y = Cnot (x :>: y)
 
-type WithCond = With1 Cond
+type WithCond = WithF Cond
 
-wrapC :: With1 Cond f => Cond (Single f) -> Single f
-wrapC = Wrap . wrap1
+wrapC :: WithF Cond f => Cond (Single f) -> Single f
+wrapC = Wrap . wrap
 
-wherein :: (With1 Cond f) => Cond (Single f) -> MkCol f p ()
-wherein cond = () <$ joining (defWithBody . Where $ wrapC cond)
+wherein :: (WithF Cond f) => Cond (Single f) -> MkCol f ()
+wherein cond = () <$ joining (fromBody . Where $ wrapC cond)
 
 
 data Number n a =
@@ -65,15 +64,15 @@ instance Fractional n => Fractional (Number n a) where
 
 -- TODO Add for other primitive types
 -- |Wraps an integer into the field
-wrapI :: With1 (Number Int) f => Number Int (Single f) -> Single f
-wrapI = Wrap . wrap1
+wrapI :: WithF (Number Int) f => Number Int (Single f) -> Single f
+wrapI = Wrap . wrap
 
 -- |Wraps a float into the field
-wrapF :: With1 (Number Float) f => Number Float (Single f) -> Single f
-wrapF = Wrap . wrap1
+wrapF :: WithF (Number Float) f => Number Float (Single f) -> Single f
+wrapF = Wrap . wrap
 
-type WithInt = With1 (Number Int)
-type WithFloat = With1 (Number Float)
+type WithInt = WithF (Number Int)
+type WithFloat = WithF (Number Float)
 type Numeric f = (WithInt f, WithFloat f)
 
 
@@ -86,7 +85,7 @@ data Txt a =
 instance Semigroup (Txt a) where
   (<>) = TAppend
 
-type WithTxt = With1 Txt
+type WithTxt = WithF Txt
 
 liftS :: WithTxt f => String -> f a
-liftS = wrap1 . PrimTxt
+liftS = wrap . PrimTxt

@@ -7,14 +7,13 @@ module Data.Column (
 ) where
 
 import Data.RefTuple (
-  Tuple(..), Single(..), as, select
-  , singular, singularTag
+  Tuple(..), Single(..), as, select, singular, singularTag
   )
 import Data.Impl.Column (
-  Column, omit, Order, OrdDir(..), asc, dsc, PartIndex, part, RowPos(..)
+  Column, omit, Order, OrdDir(..), asc, dsc, RowPos(..)
   , MkCol, Build, BuiltColumn, build, known, refer, lift
   , order, union, intersection, difference, partitions, window
   )
-import Data.Impl.Classes ( With(..), With1(..) )
+import Data.Impl.Classes
 import Data.Impl.Singles
 import Data.Impl.Aggregates

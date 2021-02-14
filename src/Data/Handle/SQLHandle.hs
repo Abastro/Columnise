@@ -1,135 +1,171 @@
 {-# LANGUAGE GADTSyntax #-}
 module Data.Handle.SQLHandle (
-  SingleStmt, SelJoin(..), SelCore(..), SelStmt
+  SelJoin(..), SelCore(..), SelStmt
   , Medium(..), SQLFormat(..), SQLFormer(..), formSQL, defFormer
 ) where
 
-import Data.Foldable
+import Control.Applicative
+import Control.Monad.State
 import Data.List
+import Data.List.NonEmpty ( NonEmpty(..) )
 import Data.Maybe
+import Data.Function ( on )
 import Data.String ( IsString(..) )
 import qualified Data.Map as M
 
+import Data.Impl.Utils
 import Data.Impl.Column
 import Data.Column
 
--- TODO SingleStmt does not look like it belongs here
-data SingleStmt a =
-  SBool (Cond a)
-  | SInt (Number Int a)
-  | SFloat (Number Float a)
-  | STxt (Txt a)
-  deriving Functor
+-- |Refs and Aggregates in Singular statement. Impl-only.
+data SQLAg p a = Aggregate p [a]
 
-instance With1 Cond SingleStmt where
-  wrap1 = SBool
-instance With1 (Number Int) SingleStmt where
-  wrap1 = SInt
-instance With1 (Number Float) SingleStmt where
-  wrap1 = SFloat
-instance With1 Txt SingleStmt where
-  wrap1 = STxt
+type SQLReq f = (Field f, WithF Cond f, WithF (SQLAg (Aggregate f)) f)
 
-
-data SelJoin f p = SelJoin {
+data SelJoin f t = SelJoin {
   joinVar :: Int
-  , joinSrc :: Either String (SelStmt f p)
+  , joinSrc :: Either String t
   , joinOn :: Maybe (Single f)
-}
+} deriving Functor
 
-selJoin :: Int -> Either String (SelStmt f p) -> SelJoin f p
+selJoin :: Int -> Either String t -> SelJoin f t
 selJoin j s = SelJoin j s Nothing
 
-data SelCore f p where
-  Values :: [Tuple f] -> SelCore f p
-  Selects :: Tuple f -> [SelJoin f p] -> SelCore f p
-  Combines :: CombineOp -> SelCore f p -> SelCore f p -> SelCore f p
+data SelCore f p q where
+  Values :: NonEmpty (M.Map String (Single f)) -> SelCore f p q
+  Selects :: Tuple f -> [SelJoin f (SelWith f p q)] -> q -> SelCore f p q
+  Combines :: CombineOp -> SelCore f p q -> SelCore f p q -> SelCore f p q
+type SelWith f p q = WithProp p (SelCore f p q)
 
-data SProps f p a = SProps {
-  sBody :: a
-  , sOrd :: [(OrdDir, Single f)]
-  , sPart :: Maybe ([Single f], [(p, Single f)])
-  , sWindow :: Maybe (RowPos, RowPos)
-} deriving (Functor, Foldable, Traversable)
+data SelAttrib f = SelAttrib{
+  attrGroup :: Maybe ([Single f], Maybe (Single f))
+  , foo :: Maybe ()
+}
+defAtt :: SelAttrib f
+defAtt = SelAttrib{ attrGroup = Nothing, foo = Nothing }
 
-type SelStmt f p = ColProps p (SelCore f p)
+data SProps f = SProps{
+  sOrder :: [(OrdDir, Single f)]
+  , sGroups :: Maybe ([Single f], Maybe (Single f)) -- TODO GROUP BY should be in Selects
+  , sWindow :: Maybe (RowPos, RowPos) -- TODO At least better than this
+}
 
-defSel :: SelStmt f p
-defSel = Selects mempty [] <$ defColumn
+type SelPre f = SelWith f (CProps f) ()
+type SelStmt f = SelWith f (SProps f) (SelAttrib f)
 
-procStmt :: (With1 Cond f, Functor f) => Column f p -> Fresh (SelStmt f p)
-procStmt = traverse (fmap catStmts . simplify) where
+-- |Processes and simplifies statements, mainly Joins
+procStmt :: (SQLReq f) => Column f -> Fresh (SelStmt f)
+procStmt = fmap procProps . procBody where
+  procBody :: (SQLReq f) => Column f -> Fresh (SelPre f)
+  procBody = traverse (fmap catStmts . simplify)
+
   simplify body = case body of
     -- Non-join statements
-    Known n -> do k <- fresh; pure $ Selects (TRef k) [selJoin k $ Left n]
-    Lift t -> pure $ Selects t []
+    Known n -> do k <- fresh; pure $ Selects (TRef k) [selJoin k $ Left n] ()
+    Lift t -> pure $ Selects t [] ()
     Where _ -> error "Where statement cannot be the last"
     Combine m c c' -> Combines m <$> simplify c <*> simplify c'
 
     -- Partitioned column cannot be simplified
     -- TODO In fact, window require simplifications; todo for later
-    Join j c@CProps{ colPart = Just _ } b -> do
-      stmt <- Right <$> procStmt c
+    Join j c@RunProp{ prop = CProps{ cPart = Just _ } } b -> do
+      stmt <- Right <$> procBody c
       simplify b >>= joining (selJoin j stmt)
     -- Order without partition is discarded with single statement joins
 
     -- Known-Where: groups the two into join
-    Join j CProps{ colBody = Known n } (Join _ CProps{ colBody = Where s } b) ->
+    Join j RunProp{ body = Known n } (Join _ RunProp{ body = Where s } b) ->
       simplify b >>= joining (selJoin j $ Left n){ joinOn = Just s }
     -- Known to From
-    Join j CProps{ colBody = Known n } b ->
+    Join j RunProp{ body = Known n } b ->
       simplify b >>= joining (selJoin j $ Left n)
     -- Joining Lift simply leads to substitutions of latter statements
-    Join j CProps{ colBody = Lift t } b ->
+    Join j RunProp{ body = Lift t } b ->
       simplify (subsBody j t b)
     -- Gathers where statement for use
-    Join _ CProps { colBody = Where s } b ->
+    Join _ RunProp{ body = Where s } b ->
       simplify b >>= joining (selJoin whBind $ Left ""){ joinOn = Just s }
-    -- Using associativity to embed Join when ordering is not specified
-    Join j CProps{ colBody = Join k ci bi, colOrd = [] } b ->
-      simplify $ Join k ci $ Join j (defWithBody bi) b
+    -- Using associativity to embed Join when it has no property
+    Join j RunProp{ body = Join k ci bi, prop = p } b | isCPEmpty p ->
+      simplify $ Join k ci $ Join j (fromBody bi) b
+    -- Join-Where: groups the two into join (TODO)
+    
     -- Otherwise, do not simplify
     Join j c b -> do
-      stmt <- Right <$> procStmt c
+      stmt <- Right <$> procBody c
       simplify b >>= joining (selJoin j stmt)
 
   whBind = 0
-  -- Concats where statements(into singular where) and singular tuples(into values)
-  -- Also rearrange associative operations to be infix-left.
+  -- Concatenates and Rewrites
   catStmts sel = case sel of
-    Selects t [] -> Values [t] -- When only values exist
-    Selects t js -> Selects t after where
+    -- When only values exist
+    Selects (Tuple m) [] _ -> Values $ m :| []
+    -- Concatenates where statements into singular where
+    Selects t js att -> Selects t after att where
       (wheres, others) = partition ((== whBind) . joinVar) js
-      whStmt = wrapC . foldl1 Cand . map AsCond
       after = case (joinOn <$> wheres, others) of
         ([], _) -> others
         (_, []) -> error "Where statements can't be the only ones"
-        (whs, fs : os) ->
-          fs{ joinOn = Just . whStmt $ catMaybes (joinOn fs : whs) } : os
+        (whs, fs : os) -> fs{ joinOn = catWheres (joinOn fs : whs) } : os
     -- Right first to Left first
     Combines m c (Combines m' c' c'') | m == m' && m /= Diff ->
       catStmts $ Combines m (Combines m c c') c''
     -- Recursive application for Combine, as simplify itself does not apply to all
     Combines m c c' -> let cs = catStmts c; cs' = catStmts c'
       in case (m, cs, cs') of
-        (Union, Values l, Values l') -> Values $ l <> l' -- Unions two values
+        -- Concatenates singular tuples into values
+        (Union, Values l, Values l') -> Values $ l <> l'
         _ -> Combines m cs cs'
-    Values _ -> sel -- Nothing to concat
-
-  -- TODO Partitioned Join >> Where >> Lift => Having
-  -- TODO Processing omits in partition and order
-  -- Both requires change in SelStmt format; Notably, Props
-  procOmit c@CProps{ colBody = Selects t js, colOrd = ord, colPart = part } = undefined
-    where
-      omit = (snd . ins <$> filter omits ord)
-        <> (ins <$> filter omits (fold $ fst <$> part))
-  procOmit _ = undefined
+    Values{} -> sel -- Nothing to concat
 
   -- Joining join with existing core
   joining join core = case core of
-    Selects t js -> pure . Selects t $ join : js
+    Selects t js () -> pure $ Selects t (join : js) ()
     _ -> do
-      k <- fresh; pure $ Selects (TRef k) [join, selJoin k . Right $ core <$ defSel]
+      k <- fresh; pure $ Selects (TRef k) [join, selJoin k . Right $ pure core] ()
+
+  -- |Processes properties - orders, partitions, windows
+  procProps :: (SQLReq f) => SelPre f -> SelStmt f
+  procProps = go where
+    go (WithProp (CProps{ cOrd = ord, cPart = part, cWindow  = win }
+      , body)) = case body of
+      -- Simplifies Single Partitioned Join, converting Where to Having
+      Selects t [ SelJoin{ joinVar = j
+        , joinSrc = Right st@RunProp{ prop = CProps{ cPart = Just _, cWindow = Nothing }}
+        , joinOn = cond } ] _
+        | null ord && isNothing part && isNothing win ->
+          RunProp{ body = Selects t'' js att, prop = pr{ sGroups = Just (l, catWheres [c, cond]) } }
+        where
+          RunProp{ body = Selects t' js att
+          , prop = pr@SProps{ sGroups = Just (l, c) } } = procProps st
+          t'' = subsTuple j t' t -- TODO Requires deeper substitution
+      -- Select statement; removes and changes accordingly
+      Selects t js () -> (`evalState` t) $ do
+        -- TODO Flip when windows present
+        groups <- sequenceA $ uncurry procGrp <$> part
+        ords <- traverse procOrd ord
+        gets $ \t' -> RunProp {
+          body = Selects t' (fmap procProps <$> js) defAtt
+          , prop = SProps{
+            sOrder = ords, sGroups = (, Nothing) <$> groups, sWindow = Nothing }
+        } where
+          procGrp :: (SQLReq f) => [String] -> [(String, Aggregate f)] -> State (Tuple f) [Single f]
+          procGrp grps aggs = do
+            tup <- get
+            undefined -- TODO Handle aggregates into tuple here
+            return $ (tup :.) <$> grps
+
+          procOrd (Omits f r) = traverse procOmit $ Omits f <$> r          
+      -- Combine/Value statement; If omitted one exists, join a table. TODO
+      _ -> undefined where todo = 0
+    procOmit n = do
+      st <- if omits n then state $ omitField (ins n) else pure Nothing
+      maybe (gets (:. ins n)) return st
+    omitField n tup = case tup of
+      Tuple m | M.member n m -> (Just (m M.! n), Tuple $ M.delete n m)
+      TProd l -> let (res, l') = unzip $ omitField n <$> l
+        in (unionsWith const res, TProd l')
+      _ -> (Nothing, tup)
 
   -- Substitutions; Replace binding j with tuple t.
   subsBody j t body = case body of
@@ -148,6 +184,9 @@ procStmt = traverse (fmap catStmts . simplify) where
     Wrap x -> Wrap $ subsSingle j t <$> x
     tup :. name -> subsTuple j t tup :. name
 
+  catWheres :: (WithCond f) => [Maybe (Single f)] -> Maybe (Single f)
+  catWheres = unionsWith (fmap wrapC . Cand `on` AsCond)
+
 
 -- |Medium for SQL code
 class (IsString t, Monoid t) => Medium t where
@@ -163,43 +202,51 @@ instance Medium String where
   wComma = intercalate ", "
   wLines = unlines
 
-data SQLFormat f p t = SQLFormat {
+data SQLFormat f t = SQLFormat {
   formVar :: Int -> t
   , formOver :: (Single f -> t) -> f (Single f) -> t
 }
 
-data SQLFormer f p t = SQLFormer {
+data SQLFormer f t = SQLFormer {
   -- Single represented directly to SQL
   formSingle :: Single f -> t
   -- Tuple represented directly to SQL
   , formTuple :: Tuple f -> t
   -- Outmost join statement gets the inner formats with Just
-  , formJoin :: SelJoin f p -> Maybe t -> t
-  -- Select core with what to omit
-  , formCore :: [String] -> SelCore f p -> t
-  , formSel :: SelStmt f p -> t
+  , formJoin :: SelJoin f (SelStmt f) -> Maybe t -> t
+  -- Select core
+  , formCore :: SelCore f (SProps f) (SelAttrib f) -> t
+  -- Select statement
+  , formSel :: SelStmt f -> t
 }
 
-formSQL :: (With1 Cond f, Functor f, Medium t) => SQLFormer f p t -> BuiltColumn f p -> t
+formSQL :: (SQLReq f, Medium t) => SQLFormer f t -> BuiltColumn f -> t
 formSQL former col = formSel former . runFresh $ col >>= procStmt
 
-defFormer :: Medium t => SQLFormat f p t -> SQLFormer f p t -> SQLFormer f p t
+defFormer :: Medium t => SQLFormat f t -> SQLFormer f t -> SQLFormer f t
 defFormer form prev = SQLFormer {
   formSingle = \s -> let
     errAbsent n = error $ "Field " <> n <> " does not present in the tuple"
-    errExtProd = error "Extracting from product tuple is not supported"
+    prior (Right x) _ = Right x
+    prior _ (Right x) = Right x
+    prior (Left y) _ = Left y
+    findField n tup = case tup of
+      TRef k -> Just $ Left k
+      TProd l -> unionsWith prior $ findField n <$> l
+      Tuple m -> Right <$> m M.!? n
     in case s of
     Wrap f -> fOver (formSingle prev) f
-    (TRef i) :. n -> fVar i <> fromString ("." <> n)
-    Tuple l :. n -> maybe (errAbsent n) (formSingle prev) $ l M.!? n
-    _ -> errExtProd
+    tup :. n -> case findField n tup of
+      Nothing -> errAbsent n
+      Just (Left i) -> fVar i <> fromString ("." <> n)
+      Just (Right s') -> formSingle prev s'
 
   , formTuple = \t -> let
     fSWith n s = wSpace [formSingle prev s, fromString "AS", fromString n]
     in case t of
     TRef i -> fVar i <> fromString ".*"
     TProd l -> wComma $ formTuple prev <$> l
-    Tuple m -> wComma $ uncurry fSWith <$> M.toList m
+    Tuple m -> wComma $ uncurry fSWith <$> M.toAscList m
 
   , formJoin = \SelJoin{ joinVar = var, joinSrc = src, joinOn = cond } inn -> let
     srcPart sig = stmt sig $ either fromString (inParens . formSel prev) src
@@ -208,34 +255,33 @@ defFormer form prev = SQLFormer {
       Just inner -> wLines $ [wSpace [srcPart "FROM", fVar var], inner] <> condPart "WHERE"
       Nothing -> wLines $ [wSpace [srcPart "JOIN", fVar var]] <> condPart "ON"
 
-  , formCore = \omit core -> case core of
-    Values ts -> undefined -- TODO
-  -- Absent from statements
-    Selects t [] -> stmt "SELECT" $ formTuple prev (omit `omitFrom` t)
-    Selects t (fs : js) -> wLines [stmt "SELECT" $ formTuple prev (omit `omitFrom` t)
+  , formCore = \core -> case core of
+    -- Value statement with only one element is represented as single select
+    Values (tup :| []) -> formCore prev $ Selects (Tuple tup) [] defAtt
+    -- Value statements; Special treatment to first value as some sql lacks a way to name
+    Values (tup :| ts) -> wSpace [formCore prev $ Selects (Tuple tup) [] defAtt
+      , fromString "UNION", stmt "VALUES" . wComma $ value <$> ts] where
+      value m = inParens . wComma $ formSingle prev <$> M.elems m
+    -- Absent from statements
+    Selects t [] att -> stmt "SELECT" $ formTuple prev t
+    Selects t (fs : js) att -> wLines [stmt "SELECT" $ formTuple prev t
       , froms] where
       -- From statement with succeeding joins
       froms = formJoin prev fs $ Just . wLines $ joinOn <$> js
       joinOn j = formJoin prev j Nothing
     -- TODO Combine as of now does not work for mixed combines - Join?
-    Combines m s s' -> wLines [formCore prev omit s, comb m, formCore prev omit s'] where
+    Combines m s s' -> wLines [formCore prev s, comb m, formCore prev s'] where
       comb Union = fromString "UNION"
       comb Intersect = fromString "INTERSECT"
       comb Diff = fromString "EXCEPT"
 
-  -- TODO Partition; Also order by should omit from partition if exists
-  , formSel = \CProps{ colBody = b, colOrd = ords } -> let
-    toName Asc = "ASC"; toName Dsc = "DSC"
-    orders Omits{ ins = (dir, n) } = fromString $ unwords [n, toName dir]
-    omitting = map ins . filter omits
-    in wLines $ [formCore prev (snd <$> omitting ords) b]
+  , formSel = \RunProp{ body = b, prop = SProps{ sOrder = ords } } -> let
+    toName Asc = fromString "ASC"; toName Dsc = fromString "DSC"
+    orders (dir, s) = wSpace [formSingle prev s, toName dir]
+    todo = error "Group By" -- TODO
+    in wLines $ [formCore prev b]
     -- TODO Combine & Omit & Not represented using knowns -> Inside Join
-    <> [stmt "ORDER BY" $ wComma $ fromString . orders <$> ords | not $ null ords]
+    <> [stmt "ORDER BY" $ wComma $ orders <$> ords | not $ null ords]
 } where
   SQLFormat{ formVar = fVar, formOver = fOver } = form
   stmt sig s = wSpace [fromString sig, s]
-  omitFrom k t = case t of
-    Tuple m -> Tuple $ foldr M.delete m k
-    TProd l -> TProd $ omitFrom k <$> l
-    TRef k -> TRef k
-
