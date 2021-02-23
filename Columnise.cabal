@@ -18,13 +18,13 @@ extra-source-files:  CHANGELOG.md
 library
   exposed-modules:
       Data.Column
-      Data.RefTuple
-      Data.Handle.SQLHandle
+      Data.Impl.RefTuple
       Data.Impl.Utils
       Data.Impl.Classes
       Data.Impl.Column
       Data.Impl.Singles
       Data.Impl.Aggregates
+      Data.Handle.SQLHandle
   -- other-modules:
   default-extensions:
       FlexibleContexts
@@ -35,7 +35,7 @@ library
       DeriveFunctor
       DeriveFoldable
       DeriveTraversable
-      GeneralizedNewtypeDeriving
+      DerivingVia
       TupleSections
   build-depends:
       base >=4.7 && <5

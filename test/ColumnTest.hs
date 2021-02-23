@@ -6,7 +6,7 @@ main :: IO ()
 main = putStrLn "Test suite not yet implemented."
 
 example1 :: (WithCond f, Numeric f) => Single f -> BuiltColumn f
-example1 ident = build $ order [asc "begin", dsc "end"] $ do
+example1 ident = build $ order [asc "begin", dsc "end"] . asCol $ do
   t <- refer $ known "Time"
   c <- refer $ known "Class"
   wherein $ c:."priority" :>=: wrapI 0 `Cand` c:."course" :=: ident
@@ -20,7 +20,7 @@ example2 = build $ order [dsc "numClasses"]
     , ccount `as` "numClasses"
     , cmin "begin" `as` "first"
     , cmax "begin" `as` "last"
-  ] $ do
+  ] . asCol $ do
     t <- refer $ known "Time"
     c <- refer $ known "Class"
     wherein $ c:."sem" :=: t:."sem"

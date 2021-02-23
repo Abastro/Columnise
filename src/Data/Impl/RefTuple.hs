@@ -1,5 +1,5 @@
-module Data.RefTuple (
-  Single(..), Tuple(..), as, select, single, singular, singularTag
+module Data.Impl.RefTuple (
+  Single(..), Tuple(..), as, tuple, select, single, singular, singularTag
 ) where
 
 import qualified Data.Set as S
@@ -16,10 +16,10 @@ infix 8 :.
 data Tuple f =
   TRef Int
   | TProd [Tuple f]
-  | Tuple (M.Map String (Single f))
+  | TMap (M.Map String (Single f))
 
 instance Semigroup (Tuple f) where
-  Tuple l <> Tuple l' = Tuple (l <> l')
+  TMap l <> TMap l' = TMap (l <> l')
   TProd l <> t = TProd (t : l)
   t <> TProd l = TProd (t : l)
   t <> t' = TProd [t, t']
@@ -31,16 +31,20 @@ as :: a -> String -> (String, a)
 as = flip (,)
 infix 7 `as`
 
+-- |Creates a tuple with specified fields
+tuple :: [(String, Single f)] -> Tuple f
+tuple = TMap . M.fromList
+
 -- |Selects certain fields from the tuple
 select :: [String] -> Tuple f -> Tuple f
-select l t = Tuple $ M.fromSet (fieldOf t) fields where
-  fieldOf (Tuple m) n = m M.! n
+select l t = TMap $ M.fromSet (fieldOf t) fields where
+  fieldOf (TMap m) n = m M.! n
   fieldOf t n = t:.n
   fields = S.fromList l
 
 -- |Tuple with single element
 single :: String -> Single f -> Tuple f
-single n = Tuple . M.singleton n
+single n = TMap . M.singleton n
 
 -- |Field tag for singular case
 singularTag :: String

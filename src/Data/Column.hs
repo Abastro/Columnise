@@ -1,19 +1,18 @@
 module Data.Column (
-  module Data.RefTuple
+  module Data.Impl.RefTuple
   , module Data.Impl.Column
   , module Data.Impl.Classes
   , module Data.Impl.Singles
   , module Data.Impl.Aggregates
 ) where
 
-import Data.RefTuple (
-  Tuple(..), Single(..), as, select, singular, singularTag
-  )
+import Data.Impl.RefTuple hiding ( TMap, TProd, TRef )
 import Data.Impl.Column (
-  Column, omit, Order, OrdDir(..), asc, dsc, RowPos(..)
-  , MkCol, Build, BuiltColumn, build, known, refer, lift
-  , order, union, intersection, difference, partitions, window
+  Column, OrdDir(..), RowPos(..)
+  , BdBody, BdCol, BuildBody, BuildCol, BuiltColumn
+  , build, known, refer, lift, asCol
+  , union, intersection, difference,
   )
 import Data.Impl.Classes
 import Data.Impl.Singles
-import Data.Impl.Aggregates
+import Data.Impl.Aggregates hiding ( elemsOf )

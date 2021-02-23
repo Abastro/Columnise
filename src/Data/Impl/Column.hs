@@ -1,168 +1,183 @@
 {-# LANGUAGE GADTSyntax #-}
 module Data.Impl.Column (
-  Column, ColBody(..), ColProps, CProps(..), isCPEmpty
-  , Omits(..), omit, OrdDir(..), Order, asc, dsc, CombineOp(..), RowPos(..)
-  , MkCol, Build, BuiltColumn, build, joining, known, refer, lift
-  , order, union, intersection, difference, partitions, window
+  Column, ColBody(..), ColProps, CProps, isCPEmpty
+  , OrdDir(..), CombineOp(..), RowPos(..)
+  , JoinCol
+  , joining, known, refer, asCol
+  , union, intersection, difference
 ) where
 
 import Control.Applicative
+import Control.Monad.State hiding ( lift )
 import Control.Monad.Trans.Cont
-import Control.Monad.Writer hiding ( lift )
 import qualified Control.Monad.Trans as T
 import Data.Function ( on )
-import Data.Maybe
+import Data.Functor.Compose ( Compose(..) )
+import Data.Functor.Identity ( Identity(..) )
 
 import Data.Impl.Utils
 import Data.Impl.Classes
-import Data.RefTuple ( Tuple(..), Single(..) )
+import Data.Impl.RefTuple ( Tuple(..), Single(..) )
 
 -- TODO Insert, Update, Delete
 -- TODO Typecheck column statements
 
--- |Denotes omittable
-data Omits a = Omits { omits :: Bool, ins :: a } deriving (Eq, Functor)
--- |Omits certain field used for ordering/partition from the selection output.
--- Should be coupled with select or tuple construction.
--- If it is directly from referring a column, it is a no-op.
-omit :: Omits a -> Omits a
-omit x = x{ omits = True }
-
 -- |Ordering directions
 data OrdDir = Asc | Dsc deriving Eq
--- |Denotes ordering of tuple
-type Order = Omits (OrdDir, String)
--- |Ascending order
-asc :: String -> Order
-asc = Omits False . (Asc, )
--- |Descending order
-dsc :: String -> Order
-dsc = Omits False . (Dsc, )
-
 data CombineOp = Union | Intersect | Diff deriving Eq
 -- |Relative row position
 data RowPos = MinPos | RelPos Int | MaxPos deriving (Eq, Ord)
 
+-- |Denotes transformations for the column
+data Transforms f = Transforms{
+  -- |Filter transformation
+  trFilter :: Maybe (Single f)
+  -- |Sort transformation
+  , trSort :: Maybe [(OrdDir, Single f)]
+  -- |Range transformation
+  , trRange :: Maybe (RowPos, RowPos)
+}
+instance Semigroup (Transforms f) where
+  Transforms f s r <> Transforms f' s' r' = Transforms (f <|> f') (s <|> s') (r <|> r')
+instance Monoid (Transforms f) where
+  mempty = Transforms Nothing Nothing Nothing
+
+-- |Represents column of list to aggregate
+newtype ListCol a = ListCol { runListCol :: a }
+  deriving (Functor, Applicative) via Identity
+
+newtype ZipCol w s a = ZipCol (w, State [s] a)
+  deriving (Functor, Applicative) via (Compose ((,) w) (State [s]))
+
+
+-- |Denotes aggregating in group/window
+--data AggArg f s = AggArg{
+  -- |Aggregate partitions
+--  aggPart :: Maybe (PartArg f s)
+--}
+
+-- |Constructs aggregating argument, i.e. partition of group or window
+--aggregates :: (Tuple f -> PartArg f s) -> AggArg f s
+--aggregates f = mempty{ aggPart = Just $ f (TRef 0) }
+
+
+-- |Filter transformation.
+-- Analogous to the where statement, but for groups/windows.
+-- For groups, applied the first. For window, applied the last.
+filters :: (Tuple f -> Single f) -> Transforms f
+filters f = mempty{ trFilter = Just $ f (TRef 0) }
+
+-- |Sort transformation.
+-- Comes before range.
+sorts :: (Tuple f -> [(OrdDir, Single f)]) -> Transforms f
+sorts f = mempty{ trSort = Just $ f (TRef 0) }
+
+-- |Restricting range transformation.
+-- When applied, only rows within the range are left selected. Also used on window.
+-- Comes after sort.
+ranged :: RowPos -> RowPos -> Transforms f
+ranged pre fol = mempty{ trRange = Just(pre, fol) }
+
+type CProps f = [Transforms f]
+
+
+-- |Represents column body; Variables are represented by Int
 data ColBody f where
   Known :: String -> ColBody f
   Lift :: Tuple f -> ColBody f
   Where :: Single f -> ColBody f
   -- MAYBE De-bruijin indexing could make this int obsolete
-  Join :: Int -> Column f -> ColBody f -> ColBody f
+  Join :: Int -> ColumnRaw f -> ColBody f -> ColBody f
   Combine :: CombineOp -> ColBody f -> ColBody f -> ColBody f
 
 type ColProps f = WithProp (CProps f)
-data CProps f = CProps{
-  cOrd :: [Order]
-  -- Keys to apply partition by, aggregate selection
-  , cPart :: Maybe ([String], [(String, Aggregate f)])
-  , cWindow :: Maybe (RowPos, RowPos)
-}
--- Not lawful, but serves purpose of limiting use of window
-instance Semigroup (CProps f) where
-  CProps r p w <> CProps r' p' w' = CProps r'' p'' $ p'' *> (w <|> w')
-    where r'' = if null r then r' else r; p'' = p <|> p'
-instance Monoid (CProps f) where
-  mempty = CProps [] Nothing Nothing
 
 -- |Implementation-only function.
 -- Checks if column property is empty.
 isCPEmpty :: CProps f -> Bool
-isCPEmpty (CProps r p w) = null r && isNothing p && isNothing w
+isCPEmpty props = undefined
 
--- |Column data with operation f (Variable is indexed by Int)
-type Column f = ColProps f (ColBody f)
+-- |Raw column, used for implementations
+type ColumnRaw f = ColProps f (ColBody f)
 
+-- |General column
+newtype Column f = Column{ runColumn :: Fresh (ColumnRaw f) }
 
-newtype Builder r a = Builder (ContT r Fresh a)
-  deriving (Functor, Applicative, Monad)
-type BdBody f = Builder (ColBody f)
-type BdCol f = Builder (Column f)
+-- |Monad for column joins
+newtype JoinCol f a = JoinCol (ContT (ColBody f) Fresh a)
+  deriving (Functor, Applicative, Monad) via (ContT (ColBody f) Fresh)
 
--- |Monad for column construction.
--- Bind operation joins columns being bound.
-newtype MkCol f a = MkCol ((WriterT (Endo (ColBody f)) Fresh) a)
-  deriving (Functor, Applicative, Monad)
-
-type Build f = MkCol f (Column f)
-type BuiltColumn f = Fresh (Column f)
+--foo :: Field f => Aggregate f (ListCol (Single f)) -> BdWin f (Single f)
+--foo a = BuildWith . ([runListCol <$> a], ) $ gets head <* modify tail
 
 -- |Implementation-only function.
--- Locally finishes builds, processing joins. Does not affect fresh binding state.
-finishBuild :: Build f -> Build f
-finishBuild (MkCol build) = MkCol . pass $ do
-  (fin, Endo apply) <- listen build
-  pure (apply <$> fin, const mempty)
+-- Wraps join-column body into a column.
+inColumn :: Fresh (ColBody f) -> Column f
+inColumn = Column . fmap fromBody
+
+-- |Implementation-only function.
+-- Builds the join-column of tuple into column body.
+builds :: JoinCol f (Tuple f) -> Fresh (ColBody f)
+builds (JoinCol b) = simplify <$> runContT b (pure . Lift) where
+  -- General simplification
+  simplify cb = case cb of
+    Join j c@RunProp{ body = Join k ci bi } b | isCPEmpty (prop c) ->
+      simplify $ Join k ci $ Join j (fromBody bi) b -- Uses associativity of join
+    Join j c (Lift (TRef k)) | isCPEmpty (prop c) && j == k ->
+      body c -- If directly returning what's joined, removes the indirection
+    Combine m b b' -> Combine m (simplify b) (simplify b')
+    _ -> cb -- Otherwise, do not simplify
 
 -- |Implementation-only function.
 -- Joins (& binds) given column.
-joining :: Column f -> MkCol f (Tuple f)
-joining col = do
-  index <- MkCol $ T.lift fresh
-  MkCol . tell $ Endo $ Join index col
-  return $ TRef index
-
--- |Builds the column
-build :: Build f -> BuiltColumn f
-build build = fmap fst . runWriterT $ form where
-  MkCol form = finishBuild build
+joining :: ColumnRaw f -> JoinCol f (Tuple f)
+joining raw = JoinCol $ do
+  index <- T.lift fresh
+  -- Adds join statement to body from the continuation
+  ContT $ \next -> Join index raw <$> next (TRef index)
 
 -- |Refers to the known table
-known :: String -> Build f
-known = return . fromBody . Known
+known :: String -> Column f
+known = inColumn . pure . Known
 
--- |Refers to the column being built, binding it for use as a tuple.
-refer :: Build f -> MkCol f (Tuple f)
-refer build = finishBuild build >>= joining
+-- |Refers to a column as a join-column of tuples.
+refer :: Column f -> JoinCol f (Tuple f)
+refer (Column col) = JoinCol (T.lift col) >>= joining
 
--- |Lifts a tuple to a column.
-lift :: Tuple f -> Build f
-lift = return . fromBody . Lift
-
-
--- |Orders the column being built by fields specified by the order.
--- *Should be applied at last*, as its effect does not leak out from inside join.
--- (Note that, still, joined table is joined with the specified order)
--- Only outmost one would be in effect when applying order twice.
--- Without window, comes after partition. With window, comes before partition.
-order :: [Order] -> Build f -> Build f
-order ords = fmap (<* fromProp mempty{ cOrd = ords }) . finishBuild
-
--- |Partition
--- Aggregates over entire column when empty list is passed to part index.
--- *Should be applied as last*, as its effect does not leak out from inside join.
--- Only outmost one would be in effect when applying partition twice.
-partitions :: [String] -> [(String, Aggregate f)] -> Build f -> Build f
-partitions index ag = fmap (<* fromProp mempty{ cPart = Just (index, ag) }) . finishBuild
-
--- TODO Interaction with window & union
--- |Window function
--- Works in-place, alike join.
--- Its entire purpose is for aggregates,
--- so it is no-op when not coupled with partition "inside".
-window :: RowPos -> RowPos -> Build f -> Build f
-window pri post = fmap (<* fromProp mempty{ cWindow = Just (pri, post) }) . finishBuild
+-- |Turns the join-column into a column
+asCol :: JoinCol f (Tuple f) -> Column f
+asCol = inColumn . builds
 
 
--- TODO How to handle Union-After-Order: Join?
--- |Union
--- Discards any transformations in each part, e.g. order, partition, window.
--- Refer and join the part to preserve these operations.
-union :: Build f -> Build f -> Build f
-union = liftA2 (fmap fromBody . Combine Union `on` body) `on` finishBuild
+-- |Union of the join-columns
+union :: JoinCol f (Tuple f) -> JoinCol f (Tuple f) -> JoinCol f (Tuple f)
+union = fmap (refer . inColumn) . liftA2 (Combine Union) `on` builds
 
--- |Intersection
--- Discards any transformations in each part, e.g. order, partition, window.
--- Refer and join the part to preserve these operations.
-intersection :: Build f -> Build f -> Build f
-intersection = liftA2 (fmap fromBody . Combine Intersect `on` body) `on` finishBuild
+-- |Intersection of the join-columns
+intersection :: JoinCol f (Tuple f) -> JoinCol f (Tuple f) -> JoinCol f (Tuple f)
+intersection = fmap (refer . inColumn) . liftA2 (Combine Intersect) `on` builds
 
--- |Difference
--- Discards any transformations in each part, e.g. order, partition, window.
--- Refer and join the part to preserve these operations.
-difference :: Build f -> Build f -> Build f
-difference = liftA2 (fmap fromBody . Combine Diff `on` body) `on` finishBuild
+-- |Gets difference of the join-columns
+difference :: JoinCol f (Tuple f) -> JoinCol f (Tuple f) -> JoinCol f (Tuple f)
+difference = fmap (refer . inColumn) . liftA2 (Combine Diff) `on` builds
 
 infixr 2 `union`
 infixr 3 `intersection`
 infixr 3 `difference`
+
+
+-- |Applies an argument to the column, to apply transformation or grouping.
+-- No-op when directly applied to a lift.
+--withArg :: CGroup f -> BuildCol f -> BuildCol f
+--withArg grp = fmap (<* fromProp (grp, mempty))
+
+-- TODO How to handle other columns when window is added?
+-- TODO Further processing after aggregating?
+-- TODO Likely, total redesign
+
+-- |Adds window(s) to the column.
+-- Window gives locally aggregated result for each row.
+-- e.g. it can be used to calculate sum until certain rows.
+-- Note that the transformations are applied to the local list for aggregates.
+--addWindow :: [CWindow f] -> BuildCol f -> BuildCol f
+--addWindow wins = fmap (<* fromProp (mempty, wins))

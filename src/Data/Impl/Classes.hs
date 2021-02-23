@@ -7,13 +7,15 @@ module Data.Impl.Classes (
 -- TODO f for Single f which supports simplification
 
 -- |Class denoting the field type
-class Functor f => Field f where
-  data Aggregate f
+class (Functor f, Functor (Aggregate f)) => Field f where
+  data Aggregate f a
+  -- |Impl-only function for retrieving aggregated elements
+  elements :: Aggregate f a -> [a]
 
 -- |Containment of kind *
 class Field f => WithA p f where
   -- |Wraps into aggregates.
-  wrapA :: p -> Aggregate f
+  wrapA :: p a -> Aggregate f a
 
 -- |Containment of kind *->*
 class Field f => WithF g f where

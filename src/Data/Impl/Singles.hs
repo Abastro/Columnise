@@ -3,9 +3,9 @@ module Data.Impl.Singles where
 
 -- TODO Better export
 
-import Data.RefTuple ( Single(..) )
+import Data.Impl.RefTuple ( Single(..) )
 import Data.Impl.Utils
-import Data.Impl.Column ( ColBody(..), MkCol, joining )
+import Data.Impl.Column ( ColBody(..), JoinCol, joining )
 import Data.Impl.Classes
 
 -- TODO Conventionally, boolean is stored as a small number.
@@ -36,7 +36,7 @@ type WithCond = WithF Cond
 wrapC :: WithF Cond f => Cond (Single f) -> Single f
 wrapC = Wrap . wrap
 
-wherein :: (WithF Cond f) => Cond (Single f) -> MkCol f ()
+wherein :: (WithF Cond f) => Cond (Single f) -> JoinCol f ()
 wherein cond = () <$ joining (fromBody . Where $ wrapC cond)
 
 
