@@ -1,7 +1,7 @@
 {-# LANGUAGE GADTSyntax #-}
 module Data.Handle.SQLHandle (
-  SelJoin(..), SelCore(..), SelStmt
-  , Medium(..), SQLFormat(..), SQLFormer(..), formSQL, defFormer
+--  SelJoin(..), SelCore(..), SelStmt
+--  , Medium(..), SQLFormat(..), SQLFormer(..), formSQL, defFormer
 ) where
 
 import Control.Applicative ( Alternative(..) )
@@ -21,6 +21,7 @@ import Data.Impl.RefTuple
 import Data.Impl.Column
 import Data.Column
 
+{-
 -- |Aggregates in Singular statement
 data SQLAg p a = Aggregate p [a]
 -- |Refs in Singular statement
@@ -68,16 +69,16 @@ newtype SProps f = SProps{
   sOrder :: [(OrdDir, Single f)]
 } deriving (Semigroup, Monoid) via [(OrdDir, Single f)]
 
-type SelPre f = SelWith f (CProps f) ()
+type SelPre f = SelWith f [TrCol f] ()
 type SelStmt f = SelWith f (SProps f) (SelAttrib f)
 
 ---------------------------------------------------------------------------------
 
 -- MAYBE with exception monads?
 -- |Processes and simplifies statements, mainly Joins
-procStmt :: (SQLReq f) => Column f -> Fresh (SelStmt f)
+procStmt :: (SQLReq f) => Column f -> Fresh Int (SelStmt f)
 procStmt = evalContT . procBody >=> evalContT . procProps where
-  procBody :: (SQLReq f) => Column f -> ContT (SelPre f) Fresh (SelPre f)
+  procBody :: (SQLReq f) => Column f -> ContT (SelPre f) (Fresh Int) (SelPre f)
   procBody = traverse (fmap catStmts . simplify)
 
   simplify b = case b of
@@ -136,7 +137,7 @@ procStmt = evalContT . procBody >=> evalContT . procProps where
   -------------------------------------------------------------------------------
 
   -- |Processes properties - orders, partitions, windows
-  procProps :: (SQLReq f) => SelPre f -> ContT (SelStmt f) Fresh (SelStmt f)
+  procProps :: (SQLReq f) => SelPre f -> ContT (SelStmt f) (Fresh Int) (SelStmt f)
   procProps sel@(WithProp (cp, b)) = case b of
     -- Select statement, removes and changes accordingly
     Selects t js () -> callCC $ \exit -> do
@@ -183,8 +184,8 @@ procStmt = evalContT . procBody >=> evalContT . procProps where
     Values ts -> return $ RunProp{ body = Values ts, prop = convProp cp }
 
   -- Converts props, referring fields via their names
-  convProp CProps{ cOrd = ord } =
-    SProps{ sOrder = fmap (Wrap . wrap . SQLRef) . ins <$> ord }
+  --convProp CProps{ cOrd = ord } =
+  --  SProps{ sOrder = fmap (Wrap . wrap . SQLRef) . ins <$> ord }
 
   procOmit n = do
     st <- if omits n then state $ omitField (ins n) else pure Nothing
@@ -255,15 +256,15 @@ data SQLFormer f t = SQLFormer {
   -- Tuple represented directly to SQL
   , formTuple :: Tuple f -> t
   -- Outmost join statement gets the inner formats with Just
-  , formJoin :: SelJoin f (SelStmt f) -> Maybe t -> Fresh t
+  , formJoin :: SelJoin f (SelStmt f) -> Maybe t -> Fresh Int t
   -- Select core
-  , formCore :: SelCore f (SProps f) (SelAttrib f) -> Fresh t
+  , formCore :: SelCore f (SProps f) (SelAttrib f) -> Fresh Int t
   -- Select statement
-  , formSel :: SelStmt f -> Fresh t
+  , formSel :: SelStmt f -> Fresh Int t
 }
 
 -- |Forms the SQL
-formSQL :: (SQLReq f, Medium t) => SQLFormer f t -> BuiltColumn f -> t
+formSQL :: (SQLReq f, Medium t) => SQLFormer f t -> Column f -> t
 formSQL former col = runFresh $ col >>= procStmt >>= formSel former
 
 -- |Default former; fix it to get the former.
@@ -344,3 +345,4 @@ defFormer form prev = SQLFormer {
   attList att = maybe [] pure (grpBy <$> attrGroup att)
   grpBy (inds, cond) = wSpace $ [stmt "GROUP BY" . wComma $ formSingle prev <$> inds]
     <> maybe [] (pure . stmt "HAVING" . formSingle prev) cond
+-}

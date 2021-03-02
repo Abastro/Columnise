@@ -27,9 +27,9 @@ instance Monoid (Tuple f) where
   mempty = TProd []
 
 -- |Names the object, mainly as syntactic utility
-as :: a -> String -> (String, a)
+as :: a -> b -> (b, a)
 as = flip (,)
-infix 7 `as`
+infix 1 `as`
 
 -- |Creates a tuple with specified fields
 tuple :: [(String, Single f)] -> Tuple f

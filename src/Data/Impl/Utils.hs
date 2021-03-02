@@ -7,6 +7,7 @@ module Data.Impl.Utils (
 
 import Control.Applicative ( Alternative(..) )
 import Control.Monad.State
+import Data.Bifunctor ( Bifunctor )
 import Data.Maybe
 import Data.List
 
@@ -23,6 +24,7 @@ unionsWith f = fmap (uncurry $ foldl' f) . uncons . catMaybes
 -- |Denotes object along with added property
 newtype WithProp p a = WithProp{ runProp :: (p, a) }
   deriving (Functor, Applicative) via (,) p
+  deriving (Bifunctor) via (,)
   deriving (Foldable, Traversable)
 
 pattern RunProp :: a -> p -> WithProp p a
@@ -37,14 +39,14 @@ fromBody :: Monoid p => a -> WithProp p a
 fromBody = pure
 
 
--- |Monad for fresh variable names.
-newtype Fresh a = Fresh (State Int a)
-  deriving (Functor, Applicative, Monad) via State Int
+-- |Monad for taking variables from specified list
+newtype Fresh k a = Fresh (State [k] a)
+  deriving (Functor, Applicative, Monad) via State [k]
 
 -- |Runs fresh monad to get the result.
-runFresh :: Fresh a -> a
-runFresh (Fresh m) = evalState m 1
+runFresh :: Fresh k a -> [k] -> a
+runFresh (Fresh m) = evalState m
 
 -- |Gives fresh variable name.
-fresh :: Fresh Int
-fresh = Fresh $ get <* modify succ
+fresh :: Fresh k k
+fresh = Fresh $ gets head <* modify tail

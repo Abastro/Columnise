@@ -9,9 +9,10 @@ module Data.Column (
 import Data.Impl.RefTuple hiding ( TMap, TProd, TRef )
 import Data.Impl.Column (
   Column, OrdDir(..), RowPos(..)
-  , BdBody, BdCol, BuildBody, BuildCol, BuiltColumn
-  , build, known, refer, lift, asCol
-  , union, intersection, difference,
+  , Transforms, filters, sorts, ranged, Win
+  , JoinCol, ListCol, ZipCol, origin, viewWith, collapse
+  , known, refer, asCol, union, intersection, difference
+  , withTr, groups, windows
   )
 import Data.Impl.Classes
 import Data.Impl.Singles

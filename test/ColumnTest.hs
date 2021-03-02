@@ -5,23 +5,26 @@ import Data.Column
 main :: IO ()
 main = putStrLn "Test suite not yet implemented."
 
-example1 :: (WithCond f, Numeric f) => Single f -> BuiltColumn f
-example1 ident = build $ order [asc "begin", dsc "end"] . asCol $ do
+example1 :: (WithCond f, Numeric f) => Single f -> Column f
+example1 ident =
+  withTr (sorts $ \t -> [t:."begin" `as` Asc, t:."end" `as` Dsc])
+  $ asCol $ do
   t <- refer $ known "Time"
   c <- refer $ known "Class"
   wherein $ c:."priority" :>=: wrapI 0 `Cand` c:."course" :=: ident
   wherein $ c:."sem" :=: t:."sem"
-  lift $ select ["course", "begin", "end"] c
+  pure $ select ["course", "begin", "end"] c
 
-example2 :: (WithCond f, Aggregates f) => BuiltColumn f
-example2 = build $ order [dsc "numClasses"]
-  . partitions ["ident"] [
-    "ident" `indexAs` "class"
-    , ccount `as` "numClasses"
-    , cmin "begin" `as` "first"
-    , cmax "begin" `as` "last"
-  ] . asCol $ do
+example2 :: (WithCond f, Aggregates f) => Column f
+example2 =
+  withTr (sorts $ \t -> [t:."numClasses" `as` Dsc])
+  $ groups (select ["ident"]) (\l -> fmap tuple . traverse sequenceA $ [
+      (:."ident") <$> origin `as` "class"
+      , collapse (ccount <$ l) `as` "numClasses"
+      , collapse (cmin . (:."begin") <$> l) `as` "first"
+      , collapse (cmax . (:."begin") <$> l) `as` "last"])
+  $ asCol $ do
     t <- refer $ known "Time"
     c <- refer $ known "Class"
     wherein $ c:."sem" :=: t:."sem"
-    lift c
+    pure c
