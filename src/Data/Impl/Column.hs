@@ -20,12 +20,19 @@ import Data.Functor.Compose ( Compose(..) )
 import qualified Data.Map as M
 
 import Data.Impl.Utils
+--import Data.Impl.Named
 import Data.Impl.Classes
 import Data.Impl.RefTuple ( Tuple(..), Single(..) )
 
 -- TODO Insert, Update, Delete
 -- TODO Typecheck column statements
 -- TODO OR, way to involve general types
+
+type Tup f = [(String, Single f)]
+genRef :: [String] -> Int -> Tup f
+genRef fs n = (, undefined n) <$> fs
+isSameRef :: CheckField -> Int -> Tup f -> Bool
+isSameRef (CkField fs) n t = ((, Just n) <$> fs) == (second undefined <$> t)
 
 -- |Ordering directions
 data OrdDir = Asc | Dsc deriving Eq
@@ -71,7 +78,7 @@ sorts f = mempty{ trSort = Just $ f (TRef indVar) }
 -- When applied, only rows within the range are left selected. Also used on window.
 -- Should come after sort.
 ranged :: RowPos -> RowPos -> Transforms f
-ranged pre fol = mempty{ trRange = Just(pre, fol) }
+ranged pre fol = mempty{ trRange = Just (pre, fol) }
 
 -- |Denotes certain window
 type Win = Int
@@ -79,7 +86,7 @@ type Win = Int
 -- |Represents aggregating process
 data Aggregative f k = Aggregative{
   partMap :: M.Map k (Tuple f, Transforms f)
-  , aggregates :: [Either (Single f) (k, Aggregate f (Single f))]
+  , aggregates :: [(k, Aggregate f (Single f))]
 }
 instance Ord k => Semigroup (Aggregative f k) where
   Aggregative m a <> Aggregative m' a' = Aggregative (m <> m') (a <> a')
@@ -92,34 +99,33 @@ data TrCol f =
   | ColGroup (Aggregative f ()) ([Single f] -> Tuple f)
   | ColWindow (Aggregative f Win) ([Single f] -> Tuple f)
 
--- |Column property - can serve as an applicative
+-- |Column property
 type ColProps f = WithProp [TrCol f]
 
--- |Raw column, used for implementations
-type ColumnRaw f = ColProps f (ColBody f)
+-- Internal machinery to check fields match
+newtype CheckField = CkField [String]
+instance Semigroup CheckField where
+  CkField x <> CkField y = if x == y then CkField x else error "impossible, field mismatch"
+instance Monoid CheckField where -- Required due to tuple applicative
+  mempty = error "impossible, lacks field specification. Likely where statement"
+-- |Raw column, used for implementations. Left of tuple denotes fields returned
+type ColumnRaw f = ColProps f (CheckField, ColBody f)
 
 -- |General column
 newtype Column f = Column{ runColumn :: Fresh Int (ColumnRaw f) }
 -- Perhaps use continuation here?
 
 -- |Monad for column joins
-newtype JoinCol f a = JoinCol (ContT (ColBody f) (Fresh Int) a)
-  deriving (Functor, Applicative, Monad) via (ContT (ColBody f) (Fresh Int))
+newtype JoinCol f a = JoinCol (ContT (CheckField, ColBody f) (Fresh Int) a)
+  deriving (Functor, Applicative, Monad) via (ContT (CheckField, ColBody f) (Fresh Int))
 
 inColumn = Column . fmap fromBody -- Wraps join-column body into a column
 
 -- |Implementation-only function.
 -- Builds the join-column of tuple into column body.
-builds :: JoinCol f (Tuple f) -> Fresh Int (ColBody f)
-builds (JoinCol b) = simplify <$> runContT b (pure . Lift) where
-  -- General simplification
-  simplify cb = case cb of
-    Join j c@RunProp{ body = Join k ci bi } b | null (prop c) ->
-      simplify $ Join k ci $ Join j (fromBody bi) b -- Uses associativity of join
-    Join j c (Lift (TRef k)) | null (prop c) && j == k ->
-      body c -- If directly returning what's joined, removes the indirection
-    Combine m b b' -> Combine m (simplify b) (simplify b')
-    _ -> cb -- Otherwise, do not simplify
+builds :: JoinCol f (Tuple f) -> Fresh Int (CheckField, ColBody f)
+builds (JoinCol b) = runContT b (pure . withCk) where
+  withCk t = (undefined t, Lift t)
 
 -- |Implementation-only function.
 -- Joins (& binds) given column.
@@ -127,8 +133,15 @@ joining :: ColumnRaw f -> JoinCol f (Tuple f)
 joining raw = JoinCol $ do
   index <- lift fresh
   -- Adds join statement to body from the continuation
-  ContT $ \next -> Join index raw <$> next (TRef index)
-
+  ContT $ \next -> procJoin index raw <$> next (TRef index)
+  where
+    -- Uses associativity of join to reduce nesting
+    procJoin j RunProp{ prop = [], body = (cf, Join k ci bi) } tb =
+      procJoin k ci . procJoin j (fromBody (cf, bi)) $ tb
+    -- Removes unnecessary indirection
+    procJoin j RunProp{ prop = [], body = (cf, b) } (_, Lift t) | isSameRef cf j undefined =
+      (cf, b)
+    procJoin j c tb = Join j c <$> tb
 
 -- |Represents column of list to aggregate
 data ListCol f k a = ListCol (Tuple f, Transforms f) a
@@ -158,7 +171,7 @@ viewWith = mkListCol
 collapse :: Ord k => ListCol f k (Aggregate f (Single f)) -> ZipCol f k (Single f)
 collapse (ListCol part agg) = ZipCol $ do
   k <- lift fresh -- Fresh name for window
-  tell Aggregative{ partMap = M.singleton k part, aggregates = [Right (k, agg)] }
+  tell Aggregative{ partMap = M.singleton k part, aggregates = [(k, agg)] }
   return fresh -- Returns *current aggregated result*, which is bound as parameter
 
 -- |Implementation-only function. Applies column transformation.
@@ -181,7 +194,7 @@ applyTrCol tr (Column col) = Column $ first (apply . (tr :)) <$> col where
 
 -- |Refers to the known table
 known :: String -> Column f
-known = inColumn . pure . Known
+known = inColumn . pure . (undefined, ) . Known where todo = ""
 
 -- |Refers to a column as a join-column of tuples.
 refer :: Column f -> JoinCol f (Tuple f)
@@ -194,15 +207,15 @@ asCol = inColumn . builds
 
 -- |Union of the join-columns
 union :: JoinCol f (Tuple f) -> JoinCol f (Tuple f) -> JoinCol f (Tuple f)
-union = fmap (refer . inColumn) . liftA2 (Combine Union) `on` builds
+union = fmap (refer . inColumn) . (liftA2 . liftA2) (Combine Union) `on` builds
 
 -- |Intersection of the join-columns
 intersection :: JoinCol f (Tuple f) -> JoinCol f (Tuple f) -> JoinCol f (Tuple f)
-intersection = fmap (refer . inColumn) . liftA2 (Combine Intersect) `on` builds
+intersection = fmap (refer . inColumn) . (liftA2 . liftA2) (Combine Intersect) `on` builds
 
 -- |Gets difference of the join-columns
 difference :: JoinCol f (Tuple f) -> JoinCol f (Tuple f) -> JoinCol f (Tuple f)
-difference = fmap (refer . inColumn) . liftA2 (Combine Diff) `on` builds
+difference = fmap (refer . inColumn) . (liftA2 . liftA2) (Combine Diff) `on` builds
 
 infixr 2 `union`
 infixr 3 `intersection`

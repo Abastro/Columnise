@@ -21,3 +21,4 @@ class Field f => WithA p f where
 class Field f => WithF g f where
   -- |Wraps into the field.
   wrap :: g a -> f a
+

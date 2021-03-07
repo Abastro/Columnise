@@ -19,8 +19,8 @@ library
   exposed-modules:
       Data.Column
       Data.Impl.RefTuple
+      Data.Impl.Operable
       Data.Impl.Named
-      Data.Impl.NamedGens
       Data.Impl.Utils
       Data.Impl.Classes
       Data.Impl.Column

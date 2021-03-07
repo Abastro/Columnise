@@ -2,13 +2,15 @@
 {-# LANGUAGE ExplicitForAll #-}
 {-# LANGUAGE TypeFamilies #-}
 module Data.Impl.Named (
-  sym, Operable(..), Vals(..), As(..), extName
+  sym, Operable(..), Vals(..), As(..), wraps, extName
   , ListAppend, headProxy, tailProxy, ListExt, Tuple(..), (*:*)
   , TupleNormal(..), TupleElem(..), IsTuple(..)
 ) where
 
 import Data.Proxy
 import GHC.TypeLits
+
+import Data.Impl.Operable
 
 sym :: forall (s :: Symbol). Proxy s
 sym = Proxy
@@ -23,15 +25,11 @@ headProxy _ = Proxy
 tailProxy :: Proxy (a ': l) -> Proxy l
 tailProxy _ = Proxy
 
-data Operable f =
-  Refer Int String -- With tuple reference and its element
-  | Operate (f (Operable f))
-data Vals f a =
-  -- Creates from external value
-  FromVal a
-  -- With tuple reference and its element
-  | Operable (Operable f)
-newtype As (s :: Symbol) f a = As (Vals f a)
+newtype Vals f a = Vals { getVals :: Operable f }
+newtype As (s :: Symbol) f a = As { getAsIn :: Vals f a }
+
+wraps :: Wraps a f => a -> Vals f a
+wraps = Vals . Operate . wrapInto
 
 extName :: KnownSymbol s => Proxy (As s f a) -> String
 extName = symbolVal . convProxy where
@@ -52,12 +50,26 @@ TEmpty *:* t' = t'
 (a ::: t) *:* t' = a ::: (t *:* t')
 infixr 1 *:*
 
-class TupleNormal l where
+class TupleNormInt f l where
+  asRawIn :: Tuple l -> [(String, Operable f)]
+  referredIn :: Int -> Proxy f -> Proxy l -> Tuple l
+instance TupleNormInt f '[] where
+  asRawIn _ = []
+  referredIn _ _ _ = TEmpty
+instance (KnownSymbol s, TupleNormInt f l) => TupleNormInt f (As s f a ': l) where
+  asRawIn (x ::: t) = (extName $ pure x, getVals $ getAsIn x) : asRawIn t
+  referredIn j pf p =
+    As (Vals . Refer j . extName $ headProxy p) ::: referredIn j pf (tailProxy p)
+
+class TupleNormInt f l => TupleNormal (f :: * -> *) l | l -> f where
+  proxyOfF :: Proxy l -> Proxy f
+  proxyOfF _ = Proxy
+  asRaw :: Tuple l -> [(String, Operable f)]
+  asRaw = asRawIn
   referred :: Int -> Proxy l -> Tuple l
-instance TupleNormal '[] where
-  referred _ _ = TEmpty
-instance (KnownSymbol s, TupleNormal l) => TupleNormal (As s f a ': l) where
-  referred j p = As (Operable . Refer j . extName $ headProxy p) ::: referred j (tailProxy p)
+  referred j p = referredIn j (proxyOfF p) p
+instance {-# OVERLAPS #-} KnownSymbol s => TupleNormal f '[As s f a]
+instance (KnownSymbol s, TupleNormal f l) => TupleNormal f (As s f a ': l)
 
 class TupleElem s l where
   (.:) :: Tuple l -> Proxy s -> ListExt s l
@@ -95,17 +107,16 @@ instance IsTuple (As s f a, As s' f' a', As s'' f'' a'', As s''' f''' a''', As s
     '[As s f a, As s' f' a', As s'' f'' a'', As s''' f''' a''', As s'''' f'''' a'''']
   tuple (t, t', t'', t''', t'''') = t ::: t' ::: t'' ::: t''' ::: t'''' ::: TEmpty
   fromTuple (t ::: t' ::: t'' ::: t''' ::: t'''' ::: TEmpty) = (t, t', t'', t''', t'''')
--- TODO Generically handle this?
+-- MAYBE Generically handle this?
 
+exTup1 :: BasicWraps f => Tuple '[As "noh" f Int, As "meh" f Float]
+exTup1 = tuple (As @"noh" $ wraps 3, As @"meh" $ wraps 1.0)
 
-exTup1 :: Tuple '[As "noh" f Int, As "meh" f Float]
-exTup1 = tuple (As @"noh" $ FromVal 3, As @"meh" $ FromVal 1.0)
+exTup2 :: BasicWraps f => Tuple '[As "pl" f Double, As "kek" f (Maybe Int), As "dream" f Int]
+exTup2 = referred 1 (Proxy @'[_, _]) *:* tuple (As @"dream" $ wraps 3)
 
-exTup2 :: Tuple '[As "pl" f Double, As "kek" f (Maybe Int), As "dream" f Int]
-exTup2 = referred 1 (Proxy @'[_, _]) *:* tuple (As @"dream" $ FromVal 3)
-
-exTup3 :: Tuple '[As "noh" f Int, As "meh" f Float, As "pl" f Double, As "kek" f (Maybe Int), As "dream" f Int]
+exTup3 :: BasicWraps f => Tuple '[As "noh" f Int, As "meh" f Float, As "pl" f Double, As "kek" f (Maybe Int), As "dream" f Int]
 exTup3 = exTup1 *:* exTup2
 
-exExt :: Vals f Int
+exExt :: BasicWraps f => Vals f Int
 exExt = exTup3 .:sym @"noh"

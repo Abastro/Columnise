@@ -37,7 +37,7 @@ wrapC :: WithF Cond f => Cond (Single f) -> Single f
 wrapC = Wrap . wrap
 
 wherein :: (WithF Cond f) => Cond (Single f) -> JoinCol f ()
-wherein cond = () <$ joining (fromBody . Where $ wrapC cond)
+wherein cond = () <$ joining (fromBody . pure . Where $ wrapC cond)
 
 
 data Number n a =
