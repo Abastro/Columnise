@@ -1,9 +1,10 @@
 {-# LANGUAGE PatternSynonyms #-}
-module Data.Impl.Singles where
+module Data.Impl.Singles(
+) where
 
 -- TODO Better export
 
-import Data.Impl.RefTuple ( Single(..) )
+-- import Data.Impl.RefTuple ( Single(..) )
 import Data.Impl.Utils
 import Data.Impl.Column ( ColBody(..), JoinCol, joining )
 import Data.Impl.Classes
@@ -31,14 +32,9 @@ pattern x :>=: y = Cnot (x :<: y)
 pattern (:<=:) :: a -> a -> Cond a
 pattern x :<=: y = Cnot (x :>: y)
 
-type WithCond = WithF Cond
 
 wrapC :: WithF Cond f => Cond (Single f) -> Single f
 wrapC = Wrap . wrap
-
-wherein :: (WithF Cond f) => Cond (Single f) -> JoinCol f ()
-wherein cond = () <$ joining (fromBody . pure . Where $ wrapC cond)
-
 
 data Number n a =
   AsNum !a   -- For slightly better safety, adds extra step for conversion
@@ -71,9 +67,6 @@ wrapI = Wrap . wrap
 wrapF :: WithF (Number Float) f => Number Float (Single f) -> Single f
 wrapF = Wrap . wrap
 
-type WithInt = WithF (Number Int)
-type WithFloat = WithF (Number Float)
-type Numeric f = (WithInt f, WithFloat f)
 
 
 data Txt a =
@@ -84,8 +77,3 @@ data Txt a =
 
 instance Semigroup (Txt a) where
   (<>) = TAppend
-
-type WithTxt = WithF Txt
-
-liftS :: WithTxt f => String -> f a
-liftS = wrap . PrimTxt

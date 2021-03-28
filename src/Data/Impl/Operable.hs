@@ -1,4 +1,6 @@
-module Data.Impl.Operable where
+module Data.Impl.Operable (
+  Operable(..), Wraps(..), BasicWraps
+) where
 
 data Operable f =
   Refer Int String -- With tuple reference and its element
@@ -8,4 +10,5 @@ data Operable f =
 class Wraps t f where
   wrapInto :: t -> f a
 
+-- Placeholder, need to change
 type BasicWraps f = (Wraps Int f, Wraps Float f)

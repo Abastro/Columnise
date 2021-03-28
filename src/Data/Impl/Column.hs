@@ -1,12 +1,12 @@
 {-# LANGUAGE GADTSyntax #-}
 module Data.Impl.Column (
-  OrdDir(..), CombineOp(..), RowPos(..)
+  OrdDir(..), CombineOp(..), RowPos(..), orders
   , Column(..), ColBody(..), ColProps
   , Transforms(..), filters, sorts, ranged
   , Win, Aggregative(..), TrCol(..)
   , JoinCol, builds, joining
-  , ListCol, ZipCol(..), origin, viewWith, collapse
-  , known, refer, asCol, union, intersection, difference
+  , ListCol, ZipCol(..), viewWith, collapse
+  , known, refer, wherein, asCol, union, intersection, difference
   , withTr, groups, windows
 ) where
 
@@ -14,38 +14,37 @@ import Control.Applicative
 import Control.Monad.State
 import Control.Monad.Writer
 import Control.Monad.Cont
-import Data.Function ( on )
-import Data.Bifunctor ( Bifunctor(..) )
+import Data.Proxy
 import Data.Functor.Compose ( Compose(..) )
 import qualified Data.Map as M
 
 import Data.Impl.Utils
---import Data.Impl.Named
+import Data.Impl.Operable
+import Data.Impl.Named
 import Data.Impl.Classes
-import Data.Impl.RefTuple ( Tuple(..), Single(..) )
 
 -- TODO Insert, Update, Delete
--- TODO Typecheck column statements
--- TODO OR, way to involve general types
-
-type Tup f = [(String, Single f)]
-genRef :: [String] -> Int -> Tup f
-genRef fs n = (, undefined n) <$> fs
-isSameRef :: CheckField -> Int -> Tup f -> Bool
-isSameRef (CkField fs) n t = ((, Just n) <$> fs) == (second undefined <$> t)
+-- TODO Support on left joins and others
 
 -- |Ordering directions
 data OrdDir = Asc | Dsc deriving Eq
+-- |Combine operations
 data CombineOp = Union | Intersect | Diff deriving Eq
 -- |Relative row position
 data RowPos = MinPos | RelPos Int | MaxPos deriving (Eq, Ord)
 
+-- |Non-inhabited data to denote order.
+data Order
+-- |Gives order using certain field.
+orders :: Vals f a -> OrdDir -> (OrdDir, Vals f Order)
+orders (Vals v) r = (r, Vals v) -- MAYBE add order-able constraint here?
+infix 1 `orders`
+
 -- |Represents column body; Variables are represented by Int
 data ColBody f where
   Known :: String -> ColBody f
-  Lift :: Tuple f -> ColBody f
-  Where :: Single f -> ColBody f
-  -- MAYBE De-bruijin indexing could make this int obsolete
+  Lift :: TupRaw f -> ColBody f
+  Where :: Operable f -> ColBody f
   Join :: Int -> ColumnRaw f -> ColBody f -> ColBody f
   Combine :: CombineOp -> ColBody f -> ColBody f -> ColBody f
 
@@ -53,31 +52,36 @@ indVar = 0 -- Variable used for indices(partition) / reference
 aggVar = -1 -- Variable used for target being aggregated
 
 -- |Denotes transformations for the column
-data Transforms f = Transforms{
-  trFilter :: Maybe (Single f)
-  , trSort :: Maybe [(OrdDir, Single f)]
+data Transforms f a = Transforms{
+  trFilter :: Maybe (Operable f)
+  , trSort :: Maybe [(OrdDir, Operable f)]
   , trRange :: Maybe (RowPos, RowPos)
-}
-instance Semigroup (Transforms f) where
+} deriving Functor
+instance Semigroup (Transforms f a) where
   Transforms f s r <> Transforms f' s' r' = Transforms (f <|> f') (s <|> s') (r <|> r')
-instance Monoid (Transforms f) where
+instance Monoid (Transforms f a) where
   mempty = Transforms Nothing Nothing Nothing
 
--- |Filter transformation.
+-- | /Filter transformation./
+--
 -- Analogous to the where statement, but for groups/windows.
+--
 -- For window, applied the last. Otherwise, recommended to be the first.
-filters :: (Tuple f -> Single f) -> Transforms f
-filters f = mempty{ trFilter = Just $ f (TRef indVar) }
+filters :: TupleNormal l f => (Tuple l -> Vals f Bool) -> Transforms f (Tuple l)
+filters f = mempty{ trFilter = Just . getVals $ f (referred indVar) }
 
--- |Sort transformation.
+-- | /Sort transformation./
+--
 -- Should come before range.
-sorts :: (Tuple f -> [(OrdDir, Single f)]) -> Transforms f
-sorts f = mempty{ trSort = Just $ f (TRef indVar) }
+-- TODO Represent order from Vals
+sorts :: TupleNormal l f => (Tuple l -> [(OrdDir, Vals f Order)]) -> Transforms f (Tuple l)
+sorts f = mempty{ trSort = Just $ second getVals <$> f (referred indVar) }
 
--- |Restricting range transformation.
--- When applied, only rows within the range are left selected. Also used on window.
+-- | /Transformation of restricting range./
+--
+-- When applied, only rows within the range are left selected.
 -- Should come after sort.
-ranged :: RowPos -> RowPos -> Transforms f
+ranged :: RowPos -> RowPos -> Transforms f a
 ranged pre fol = mempty{ trRange = Just (pre, fol) }
 
 -- |Denotes certain window
@@ -85,8 +89,8 @@ type Win = Int
 
 -- |Represents aggregating process
 data Aggregative f k = Aggregative{
-  partMap :: M.Map k (Tuple f, Transforms f)
-  , aggregates :: [(k, Aggregate f (Single f))]
+  partMap :: M.Map k (TupRaw f, Transforms f ())
+  , aggregates :: [(k, Aggregate f (Operable f))]
 }
 instance Ord k => Semigroup (Aggregative f k) where
   Aggregative m a <> Aggregative m' a' = Aggregative (m <> m') (a <> a')
@@ -95,87 +99,73 @@ instance Ord k => Monoid (Aggregative f k) where
 
 -- |Represents column transformation
 data TrCol f =
-  ColTrans (Transforms f)
-  | ColGroup (Aggregative f ()) ([Single f] -> Tuple f)
-  | ColWindow (Aggregative f Win) ([Single f] -> Tuple f)
+  ColTrans (Transforms f ())
+  | ColGroup (Aggregative f ()) ([Operable f] -> TupRaw f)
+  | ColWindow (Aggregative f Win) ([Operable f] -> TupRaw f)
 
 -- |Column property
 type ColProps f = WithProp [TrCol f]
 
--- Internal machinery to check fields match
-newtype CheckField = CkField [String]
-instance Semigroup CheckField where
-  CkField x <> CkField y = if x == y then CkField x else error "impossible, field mismatch"
-instance Monoid CheckField where -- Required due to tuple applicative
-  mempty = error "impossible, lacks field specification. Likely where statement"
 -- |Raw column, used for implementations. Left of tuple denotes fields returned
-type ColumnRaw f = ColProps f (CheckField, ColBody f)
+type ColumnRaw f = ColProps f ([String], ColBody f)
 
 -- |General column
-newtype Column f = Column{ runColumn :: Fresh Int (ColumnRaw f) }
+newtype Column f a = Column{ runColumn :: Fresh Int (ColumnRaw f) }
 -- Perhaps use continuation here?
 
 -- |Monad for column joins
-newtype JoinCol f a = JoinCol (ContT (CheckField, ColBody f) (Fresh Int) a)
-  deriving (Functor, Applicative, Monad) via (ContT (CheckField, ColBody f) (Fresh Int))
+newtype JoinCol f a = JoinCol (ContT (ColBody f) (Fresh Int) a)
+  deriving (Functor, Applicative, Monad) via (ContT (ColBody f) (Fresh Int))
 
-inColumn = Column . fmap fromBody -- Wraps join-column body into a column
+inColumn :: TupleNormal l f => Proxy (Tuple l) -> Fresh Int (ColBody f) -> Column f (Tuple l)
+inColumn p b = Column $ fromBody . (fields p, ) <$> b
+
 
 -- |Implementation-only function.
 -- Builds the join-column of tuple into column body.
-builds :: JoinCol f (Tuple f) -> Fresh Int (CheckField, ColBody f)
-builds (JoinCol b) = runContT b (pure . withCk) where
-  withCk t = (undefined t, Lift t)
+builds :: TupleNormal l f => JoinCol f (Tuple l) -> Fresh Int (ColBody f)
+builds (JoinCol b) = runContT b (pure . Lift . asRaw)
 
 -- |Implementation-only function.
 -- Joins (& binds) given column.
-joining :: ColumnRaw f -> JoinCol f (Tuple f)
+joining :: ColumnRaw f -> JoinCol f Int
 joining raw = JoinCol $ do
   index <- lift fresh
   -- Adds join statement to body from the continuation
-  ContT $ \next -> procJoin index raw <$> next (TRef index)
+  ContT $ \next -> procJoin index raw <$> next index
   where
     -- Uses associativity of join to reduce nesting
     procJoin j RunProp{ prop = [], body = (cf, Join k ci bi) } tb =
       procJoin k ci . procJoin j (fromBody (cf, bi)) $ tb
     -- Removes unnecessary indirection
-    procJoin j RunProp{ prop = [], body = (cf, b) } (_, Lift t) | isSameRef cf j undefined =
-      (cf, b)
-    procJoin j c tb = Join j c <$> tb
+    procJoin j RunProp{ prop = [], body = (cf, b) } (Lift t) | isSameRef cf j t =
+      b
+    procJoin j c tb = Join j c tb
+    -- Check if t is same with certain reference
+    isSameRef fs n t = Just ((, n) <$> fs) == traverse ref t
+    ref (n, Refer j nf) | n == nf = Just (n, j)
+    ref _ = Nothing
 
 -- |Represents column of list to aggregate
-data ListCol f k a = ListCol (Tuple f, Transforms f) a
+data ListCol f k a = ListCol (TupRaw f, Transforms f ()) a
   deriving Functor
--- |Implementation-only constructor for listcol
-mkListCol :: (Tuple f -> Tuple f) -> Transforms f -> ListCol f k (Tuple f)
-mkListCol indices trans = ListCol (indices (TRef indVar), trans) (TRef aggVar)
+-- |Internal constructor for listcol
+mkListCol :: (TupleNormal l f, TupleNormal m f) => (Tuple l -> Tuple m) ->
+  Transforms f (Tuple l) -> ListCol f k (Tuple l)
+mkListCol indices trans = ListCol
+  (asRaw $ indices (referred indVar), () <$ trans) (referred aggVar)
 
 -- |Applicative for column zips, used for group and window
-newtype ZipCol f k a = ZipCol{
-  runZipCol :: WriterT (Aggregative f k) (Fresh k) (Fresh (Single f) a)
-} deriving (Functor, Applicative) via
-  (Compose (WriterT (Aggregative f k) (Fresh k)) (Fresh (Single f)))
-
--- |The origin data to look up for.
--- For group, this is the index tuple of partition.
--- For window, this is the original tuple.
-origin :: Ord k => ZipCol f k (Tuple f)
-origin = pure (TRef indVar)
-
--- |View the 'window' partitioned by indices tuple with given transformation,
--- which is to be aggregated later.
-viewWith :: (Tuple f -> Tuple f) -> Transforms f -> ListCol f Win (Tuple f)
-viewWith = mkListCol
-
--- |Collapses the aggregated column of list into column zips
-collapse :: Ord k => ListCol f k (Aggregate f (Single f)) -> ZipCol f k (Single f)
-collapse (ListCol part agg) = ZipCol $ do
-  k <- lift fresh -- Fresh name for window
-  tell Aggregative{ partMap = M.singleton k part, aggregates = [(k, agg)] }
-  return fresh -- Returns *current aggregated result*, which is bound as parameter
+newtype ZipCol f k a = ZipCol (
+  WriterT (Aggregative f k) (Fresh k) (Fresh (Operable f) a) )
+  deriving (Functor, Applicative) via
+  (Compose (WriterT (Aggregative f k) (Fresh k)) (Fresh (Operable f)))
+-- |Internal runs for zipcol
+runZipCol :: [k] -> ZipCol f k (TupRaw f) -> ([Operable f] -> TupRaw f, Aggregative f k)
+runZipCol ins (ZipCol zc) = (`runFresh` ins) $ runWriterT . fmap runFresh $ zc
 
 -- |Implementation-only function. Applies column transformation.
-applyTrCol :: TrCol f -> Column f -> Column f
+applyTrCol :: TrCol f -> Column f a -> Column f b
 applyTrCol tr (Column col) = Column $ first (apply . (tr :)) <$> col where
   -- merges transformation with order
   mergeTr (Transforms Nothing Nothing Nothing) (Transforms f s r) =
@@ -192,55 +182,93 @@ applyTrCol tr (Column col) = Column $ first (apply . (tr :)) <$> col where
   apply l = l
 
 
--- |Refers to the known table
-known :: String -> Column f
-known = inColumn . pure . (undefined, ) . Known where todo = ""
+-- |References a known table, i.e. a stored table.
+known :: TupleNormal l f => String -> Column f (Tuple l)
+known = inColumn Proxy . pure . Known
 
 -- |Refers to a column as a join-column of tuples.
-refer :: Column f -> JoinCol f (Tuple f)
-refer (Column col) = JoinCol (lift col) >>= joining
+refer :: TupleNormal l f => Column f (Tuple l) -> JoinCol f (Tuple l)
+refer (Column col) = JoinCol (lift col) >>= (fmap referred . joining)
+
+-- |Represents where statement.
+wherein :: Vals f Bool -> JoinCol f ()
+wherein cond = () <$ joining (pure ([], Where $ getVals cond))
 
 -- |Turns the join-column into a column
-asCol :: JoinCol f (Tuple f) -> Column f
-asCol = inColumn . builds
-
+asCol :: TupleNormal l f => JoinCol f (Tuple l) -> Column f (Tuple l)
+asCol jc = inColumn Proxy (builds jc)
 
 -- |Union of the join-columns
-union :: JoinCol f (Tuple f) -> JoinCol f (Tuple f) -> JoinCol f (Tuple f)
-union = fmap (refer . inColumn) . (liftA2 . liftA2) (Combine Union) `on` builds
+union :: TupleNormal l f => JoinCol f (Tuple l) -> JoinCol f (Tuple l) -> JoinCol f (Tuple l)
+union = fmap (refer . inColumn Proxy) . liftA2 (Combine Union) `on` builds
 
 -- |Intersection of the join-columns
-intersection :: JoinCol f (Tuple f) -> JoinCol f (Tuple f) -> JoinCol f (Tuple f)
-intersection = fmap (refer . inColumn) . (liftA2 . liftA2) (Combine Intersect) `on` builds
+intersection :: TupleNormal l f => JoinCol f (Tuple l) -> JoinCol f (Tuple l) -> JoinCol f (Tuple l)
+intersection = fmap (refer . inColumn Proxy) . liftA2 (Combine Intersect) `on` builds
 
 -- |Gets difference of the join-columns
-difference :: JoinCol f (Tuple f) -> JoinCol f (Tuple f) -> JoinCol f (Tuple f)
-difference = fmap (refer . inColumn) . (liftA2 . liftA2) (Combine Diff) `on` builds
+difference :: TupleNormal l f => JoinCol f (Tuple l) -> JoinCol f (Tuple l) -> JoinCol f (Tuple l)
+difference = fmap (refer . inColumn Proxy) . liftA2 (Combine Diff) `on` builds
 
 infixr 2 `union`
 infixr 3 `intersection`
 infixr 3 `difference`
 
 
--- |Applies a transformation to the column.
+-- |Collapses the aggregated column of list into column zips
+collapse :: (Functor (Aggregate f), Ord k) =>
+  ListCol f k (Aggregate f (Vals f a)) -> ZipCol f k (Vals f a)
+collapse (ListCol part agg) = ZipCol $ do
+  k <- lift fresh -- Fresh name for window
+  tell Aggregative{ partMap = M.singleton k part, aggregates = [(k, getVals <$> agg)] }
+  return $ Vals <$> fresh -- Returns *current aggregated result*, which is bound as parameter
+
+-- | /Applies a transformation to the column./
+--
 -- No-op when directly applied to a lift.
-withTr :: Transforms f -> Column f -> Column f
-withTr tr = applyTrCol (ColTrans tr)
+withTr :: Transforms f a -> (Column f a -> Column f a)
+withTr tr = applyTrCol (ColTrans $ () <$ tr)
 
--- |Applies group to the column.
--- Group gives aggregated results for the provided partition from the indices.
-groups :: (Tuple f -> Tuple f) ->
-  (ListCol f () (Tuple f) -> ZipCol f () (Tuple f)) -> (Column f -> Column f)
+-- | /Applies grouping to the column./
+--
+-- Group gives aggregated results from the partition with given indices.
+--
+-- Function scheme: @indices -> aggr -> result@
+--
+-- [indices]: Denotes grouping indices deduced from the tuple.
+-- [aggr]: Denotes grouping to attain the result of 'groups'.
+--  * First parameter of @aggr@ denotes the indices, which can be used in result.
+--  * Second parameter of @aggr@ denotes the lists to be aggregated.
+-- [result]: Gives column transformation by the grouping.
+groups :: (TupleNormal l f, TupleNormal m f, TupleNormal n f) =>
+  (Tuple l -> Tuple m) ->
+  (ZipCol f () (Tuple m) -> ListCol f () (Tuple l) -> ZipCol f () (Tuple n)) ->
+  (Column f (Tuple l) -> Column f (Tuple n))
 groups indices aggr = applyTrCol (ColGroup pre post) where
-  (post, pre) = (`runFresh` repeat ()) . runWriterT . fmap runFresh . runZipCol
-    $ aggr (mkListCol indices mempty)
+  grouped = aggr (pure $ referred indVar) (mkListCol indices mempty)
+  (post, pre) = runZipCol (repeat ()) $ asRaw <$> grouped
 
--- |Applies windows to the column.
+-- |View the window partitioned by indices tuple with given transformation,
+-- which is to be aggregated later.
+viewWith :: (TupleNormal l f, TupleNormal m f) => (Tuple l -> Tuple m) ->
+  Transforms f (Tuple l) -> ListCol f Win (Tuple l)
+viewWith = mkListCol
+
+-- | /Applies windows to the column./
+--
 -- Window gives locally aggregated result for each row.
 -- e.g. it can be used to calculate sum until certain rows.
--- Note that the transformations are applied to the local list for aggregates.
+--
 -- It is recommended to apply window after filter transformation.
-windows :: ZipCol f Win (Tuple f) -> (Column f -> Column f)
-windows zipped = applyTrCol (ColWindow pre post) where
-  (post, pre) = (`runFresh` [1..]) . runWriterT . fmap runFresh . runZipCol $ zipped
-
+--
+-- Function scheme: @zips -> result@
+--
+-- [zips]: Denotes zipping to attain the result of 'windows'.
+--  Parameter of @zips@ denote the original tuples.
+--  Use 'viewWith' to aggregate over a window.
+-- [result]: Gives column transformation by the windows.
+windows :: (TupleNormal l f, TupleNormal m f) =>
+  (ZipCol f Win (Tuple l) -> ZipCol f Win (Tuple m)) ->
+  (Column f (Tuple l) -> Column f (Tuple m))
+windows zips = applyTrCol (ColWindow pre post) where
+  (post, pre) = runZipCol [1..] $ asRaw <$> zips (pure $ referred indVar)

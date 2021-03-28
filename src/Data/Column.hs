@@ -6,11 +6,11 @@ module Data.Column (
   , module Data.Impl.Aggregates
 ) where
 
-import Data.Impl.RefTuple hiding ( TMap, TProd, TRef )
+--import Data.Impl.RefTuple hiding ( TMap, TProd, TRef )
 import Data.Impl.Column (
   Column, OrdDir(..), RowPos(..)
   , Transforms, filters, sorts, ranged, Win
-  , JoinCol, ListCol, ZipCol, origin, viewWith, collapse
+  , JoinCol, ListCol, ZipCol, viewWith, collapse
   , known, refer, asCol, union, intersection, difference
   , withTr, groups, windows
   )

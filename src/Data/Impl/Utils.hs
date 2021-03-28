@@ -1,13 +1,17 @@
 {-# LANGUAGE PatternSynonyms #-}
 module Data.Impl.Utils (
-  unionWith, unionsWith
+  module Data.Bifunctor, module Control.Arrow
+  , module Data.Function
+  , unionWith, unionsWith
   , WithProp(..), pattern RunProp, body, prop, fromProp, fromBody
   , Fresh, runFresh, fresh
 ) where
 
 import Control.Applicative ( Alternative(..) )
 import Control.Monad.State
-import Data.Bifunctor ( Bifunctor )
+import Control.Arrow ( (&&&) )
+import Data.Function ( on )
+import Data.Bifunctor ( Bifunctor(..) )
 import Data.Maybe
 import Data.List
 

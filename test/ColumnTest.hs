@@ -5,7 +5,7 @@ import Data.Column
 main :: IO ()
 main = putStrLn "Test suite not yet implemented."
 
-example1 :: (WithCond f, Numeric f) => Single f -> Column f
+example1 :: Single f -> Column f
 example1 ident =
   withTr (sorts $ \t -> [t:."begin" `as` Asc, t:."end" `as` Dsc])
   $ asCol $ do
@@ -15,7 +15,7 @@ example1 ident =
   wherein $ c:."sem" :=: t:."sem"
   pure $ select ["course", "begin", "end"] c
 
-example2 :: (WithCond f, Aggregates f) => Column f
+example2 :: Column f
 example2 =
   withTr (sorts $ \t -> [t:."numClasses" `as` Dsc])
   $ groups (select ["ident"]) (\l -> fmap tuple . traverse sequenceA $ [
